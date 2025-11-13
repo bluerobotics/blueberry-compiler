@@ -247,6 +247,55 @@ LongSuffix: Type = {
 };
 
 ConstValue: ConstValue = {
+    <expr:AddExpr> => expr,
+};
+
+AddExpr: ConstValue = {
+    <left:AddExpr> "+" <right:MulExpr> => ConstValue::BinaryOp {
+        op: BinaryOperator::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    },
+    <left:AddExpr> "-" <right:MulExpr> => ConstValue::BinaryOp {
+        op: BinaryOperator::Subtract,
+        left: Box::new(left),
+        right: Box::new(right),
+    },
+    <MulExpr>,
+};
+
+MulExpr: ConstValue = {
+    <left:MulExpr> "*" <right:UnaryExpr> => ConstValue::BinaryOp {
+        op: BinaryOperator::Multiply,
+        left: Box::new(left),
+        right: Box::new(right),
+    },
+    <left:MulExpr> "/" <right:UnaryExpr> => ConstValue::BinaryOp {
+        op: BinaryOperator::Divide,
+        left: Box::new(left),
+        right: Box::new(right),
+    },
+    <UnaryExpr>,
+};
+
+UnaryExpr: ConstValue = {
+    "+" <expr:UnaryExpr> => ConstValue::UnaryOp {
+        op: UnaryOperator::Plus,
+        expr: Box::new(expr),
+    },
+    "-" <expr:UnaryExpr> => ConstValue::UnaryOp {
+        op: UnaryOperator::Minus,
+        expr: Box::new(expr),
+    },
+    <PrimaryExpr>,
+};
+
+PrimaryExpr: ConstValue = {
+    "(" <expr:AddExpr> ")" => expr,
+    <LiteralValue>,
+};
+
+LiteralValue: ConstValue = {
     <i:IntegerLiteral> => ConstValue::Integer(i),
     <f:FloatLiteral> => ConstValue::Float(f),
     <fx:FixedLiteral> => ConstValue::Fixed(fx),

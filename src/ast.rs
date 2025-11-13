@@ -131,6 +131,15 @@ pub enum ConstValue {
     Boolean(bool),
     Char(char),
     ScopedName(Vec<String>),
+    UnaryOp {
+        op: UnaryOperator,
+        expr: Box<ConstValue>,
+    },
+    BinaryOp {
+        op: BinaryOperator,
+        left: Box<ConstValue>,
+        right: Box<ConstValue>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +187,17 @@ impl FixedPointLiteral {
 
     pub fn precision(&self) -> usize {
         self.digits.len()
+    }
+
+    pub fn to_f64(&self) -> f64 {
+        let mut value = 0_f64;
+        for ch in self.digits.chars() {
+            value = value * 10.0 + ch.to_digit(10).unwrap_or(0) as f64;
+        }
+        if self.scale > 0 {
+            value /= 10_f64.powi(self.scale as i32);
+        }
+        if self.negative { -value } else { value }
     }
 }
 
@@ -250,6 +270,20 @@ pub struct Annotation {
 pub enum AnnotationParam {
     Named { name: String, value: ConstValue },
     // Positional(ConstValue),  // Can be added later if you want the shortened form
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOperator {
+    Plus,
+    Minus,
 }
 
 #[derive(Debug, Clone, PartialEq)]

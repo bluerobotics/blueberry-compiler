@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 lalrpop = "0.22.2"
 
 [dependencies]
+evalexpr = "11"
 lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
 proc-macro2 = "1"

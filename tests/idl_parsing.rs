@@ -1,6 +1,6 @@
 use rust_lalrpop_experiment::{
-    AnnotationParam, ConstValue, Definition, FixedPointLiteral, ImportScope, IntegerBase,
-    IntegerLiteral, Type, TypeDef, parse_idl,
+    AnnotationParam, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral, ImportScope,
+    IntegerBase, IntegerLiteral, Type, TypeDef, parse_idl,
 };
 use std::{fs, path::Path};
 
@@ -30,6 +30,35 @@ fn expect_const_value<'a>(defs: &'a [Definition], name: &str) -> &'a ConstValue 
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing const {}", name))
+}
+
+fn expect_scoped_const_def<'a>(defs: &'a [Definition], path: &[&str]) -> &'a Commented<ConstDef> {
+    fn walk<'a>(defs: &'a [Definition], path: &[&str]) -> Option<&'a Commented<ConstDef>> {
+        if path.is_empty() {
+            return None;
+        }
+        if path.len() == 1 {
+            let name = path[0];
+            return defs.iter().find_map(|def| match def {
+                Definition::ConstDef(c) if c.node.name == name => Some(c),
+                _ => None,
+            });
+        }
+        let (first, rest) = path.split_first().unwrap();
+        let module_defs = defs.iter().find_map(|def| match def {
+            Definition::ModuleDef(module) if module.node.name == *first => {
+                Some(&module.node.definitions)
+            }
+            _ => None,
+        })?;
+        walk(module_defs, rest)
+    }
+
+    walk(defs, path).unwrap_or_else(|| panic!("missing const {:?}", path))
+}
+
+fn expect_scoped_const_value<'a>(defs: &'a [Definition], path: &[&str]) -> &'a ConstValue {
+    &expect_scoped_const_def(defs, path).node.value
 }
 
 fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
@@ -431,11 +460,143 @@ fn parses_fixed_point_literals() {
     let trailing_dot = expect_fixed(expect_const_value(&defs, "TRAILING_DOT"));
     assert_eq!(trailing_dot.digits, "7");
     assert_eq!(trailing_dot.scale, 0);
+    assert_eq!(trailing_dot.precision(), 1);
+    assert!(!trailing_dot.negative);
 
     let negative_fraction = expect_fixed(expect_const_value(&defs, "NEGATIVE_FRACTION"));
     assert_eq!(negative_fraction.digits, "0875");
     assert_eq!(negative_fraction.scale, 3);
+    assert_eq!(negative_fraction.precision(), 4);
     assert!(negative_fraction.negative);
+}
+
+#[test]
+fn folds_numeric_constant_references() {
+    fn assert_close(actual: f64, expected: f64) {
+        let diff = (actual - expected).abs();
+        let scale = expected.abs().max(1.0);
+        let tolerance = f64::EPSILON * scale * 4.0;
+        assert!(
+            diff <= tolerance,
+            "expected float {} within {} but got {}",
+            expected,
+            tolerance,
+            actual
+        );
+    }
+
+    let defs = parse_fixture("const_folding.idl");
+
+    let expect_value = |path: &[&str]| expect_scoped_const_value(&defs, path);
+
+    expect_integer(expect_value(&["GLOBAL_ALIAS"]), 12);
+    expect_integer(expect_value(&["FORWARD_ALIAS"]), 64);
+    expect_integer(expect_value(&["Outer", "MODULE_BASE"]), 21);
+    expect_integer(expect_value(&["Outer", "MODULE_ALIAS"]), 21);
+    expect_integer(expect_value(&["Outer", "MODULE_COMPLEX"]), 18);
+    expect_integer(expect_value(&["Outer", "MODULE_MAGIC"]), 39);
+    expect_integer(expect_value(&["Outer", "Inner", "FROM_PARENT"]), 21);
+    expect_integer(expect_value(&["Outer", "Inner", "FROM_OUTER_SCOPED"]), 21);
+    expect_integer(expect_value(&["Outer", "Inner", "FROM_ABSOLUTE"]), 21);
+
+    let module_ratio = expect_value(&["Outer", "MODULE_RATIO"]);
+    let module_ratio_value = match module_ratio {
+        ConstValue::Float(v) => *v,
+        other => panic!("expected MODULE_RATIO float, found {:?}", other),
+    };
+    assert_close(module_ratio_value, 2.75);
+
+    let tau_alias = expect_value(&["TAU_ALIAS"]);
+    let tau_value = match tau_alias {
+        ConstValue::Float(v) => *v,
+        other => panic!("expected TAU_ALIAS float, found {:?}", other),
+    };
+    assert_close(tau_value, std::f64::consts::PI);
+
+    let fixed_alias = expect_value(&["FIXED_ALIAS"]);
+    let fixed = expect_fixed(fixed_alias);
+    assert_eq!(fixed.digits, "125");
+    assert_eq!(fixed.scale, 1);
+
+    let product_alias = expect_value(&["PRODUCT_ALIAS"]);
+    assert!(matches!(
+        product_alias,
+        ConstValue::ScopedName(path) if path == &scoped(&["PRODUCT"])
+    ));
+
+    let annotated_const = expect_scoped_const_def(&defs, &["ANNOTATED_LIMIT"]);
+    let const_annotation_value = annotated_const
+        .annotations
+        .first()
+        .and_then(|ann| ann.params.first())
+        .map(|param| match param {
+            AnnotationParam::Named { value, .. } => value,
+        })
+        .expect("ANNOTATED_LIMIT annotation missing");
+    expect_integer(const_annotation_value, 12);
+
+    let struct_def = defs
+        .iter()
+        .find_map(|def| match def {
+            Definition::StructDef(defn) if defn.node.name == "AnnotatedStruct" => Some(defn),
+            _ => None,
+        })
+        .expect("AnnotatedStruct struct missing");
+    let struct_annotation_value = struct_def
+        .annotations
+        .first()
+        .and_then(|ann| ann.params.first())
+        .map(|param| match param {
+            AnnotationParam::Named { value, .. } => value,
+        })
+        .expect("struct annotation missing");
+    expect_integer(struct_annotation_value, 12);
+
+    let member = struct_def
+        .node
+        .members
+        .first()
+        .expect("threshold member missing");
+    let member_annotation_value = member
+        .annotations
+        .first()
+        .and_then(|ann| ann.params.first())
+        .map(|param| match param {
+            AnnotationParam::Named { value, .. } => value,
+        })
+        .expect("member annotation missing");
+    expect_integer(member_annotation_value, 12);
+
+    let enum_def = defs
+        .iter()
+        .find_map(|def| match def {
+            Definition::EnumDef(defn) if defn.node.name == "WithConst" => Some(&defn.node),
+            _ => None,
+        })
+        .expect("WithConst enum missing");
+
+    let start = enum_def
+        .enumerators
+        .iter()
+        .find(|member| member.name == "START")
+        .expect("START enumerator missing");
+    expect_integer(
+        start
+            .value
+            .as_ref()
+            .expect("START enumerator missing value"),
+        12,
+    );
+
+    let next = enum_def
+        .enumerators
+        .iter()
+        .find(|member| member.name == "NEXT")
+        .expect("NEXT enumerator missing");
+    expect_integer(
+        next.value.as_ref().expect("NEXT enumerator missing value"),
+        13,
+    );
 }
 
 #[test]
