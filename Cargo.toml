@@ -13,6 +13,8 @@ lalrpop = "0.22.2"
 [dependencies]
 lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+proc-macro2 = "1"
+quote = "1"
 
 [target."cfg(target_arch = \"wasm32\")".dependencies]
 console_error_panic_hook = "0.1"

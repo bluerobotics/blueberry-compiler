@@ -1,6 +1,7 @@
 use lalrpop_util::lalrpop_mod;
 
 pub mod ast;
+pub mod generator;
 lalrpop_mod!(grammar);
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -63,12 +64,17 @@ mod tests {
 
     #[test]
     fn parses_example_fixture() {
-        let input = fs::read_to_string("tests/fixtures/example.idl")
-            .expect("example fixture should be available during tests");
-        let defs = parse_idl(&input).expect("example fixture should parse successfully");
+        let defs = load_fixture("example.idl");
         assert!(
             !defs.is_empty(),
             "example fixture should yield at least one definition"
         );
+    }
+
+    fn load_fixture(name: &str) -> Vec<Definition> {
+        let path = format!("tests/fixtures/{name}");
+        let input = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path, err));
+        parse_idl(&input).expect("fixture should parse successfully")
     }
 }
