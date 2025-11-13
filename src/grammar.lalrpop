@@ -1,0 +1,251 @@
+use crate::ast::*;
+
+grammar;
+
+pub IdlFile: Vec<Definition> = {
+    <defs:Definition*> => defs
+};
+
+// Comment parsing rules
+Comment: String = {
+    r"//[^\n]*" => <>.to_string(),
+    r"/\*([^*]|\*+[^*/])*\*+/" => <>.to_string(),
+};
+
+CommentList: Vec<String> = {
+    => vec![],
+    <c:Comment> <rest:CommentList> => {
+        let mut list = vec![c];
+        list.extend(rest);
+        list
+    }
+};
+
+Definition: Definition = {
+    <comments:CommentList> <m:ModuleDef> => {
+        Definition::ModuleDef(Commented::new(m, comments))
+    },
+    <comments:CommentList> <t:TypeDef> => {
+        Definition::TypeDef(Commented::new(t, comments))
+    },
+    <comments:CommentList> <e:EnumDef> => {
+        Definition::EnumDef(Commented::new(e, comments))
+    },
+    <comments:CommentList> <s:StructDef> => {
+        Definition::StructDef(Commented::new(s, comments))
+    },
+    <comments:CommentList> <c:ConstDef> => {
+        Definition::ConstDef(Commented::new(c, comments))
+    },
+};
+
+ModuleDef: ModuleDef = {
+    "module" <name:Identifier> "{" <defs:Definition*> "}" ";" => ModuleDef {
+        name,
+        definitions: defs,
+    }
+};
+
+TypeDef: TypeDef = {
+    "typedef" <base_type:Type> <name:Identifier> ";" => TypeDef {
+        base_type,
+        name,
+    }
+};
+
+ConstDef: ConstDef = {
+    "const" <const_type:Type> <name:Identifier> "=" <value:ConstValue> ";" => ConstDef {
+        const_type,
+        name,
+        value,
+    }
+};
+
+EnumDef: EnumDef = {
+    "enum" <name:Identifier> "{" <enumerators:EnumeratorList> "}" ";" => EnumDef {
+        name,
+        enumerators,
+    }
+};
+
+EnumeratorList: Vec<String> = {
+    <id:Identifier> => vec![id],
+    <id:Identifier> "," <rest:EnumeratorList> => {
+        let mut list = vec![id];
+        list.extend(rest);
+        list
+    }
+};
+
+StructDef: StructDef = {
+    "struct" <name:Identifier> "{" <members:MemberList> "}" ";" => StructDef {
+        name,
+        members,
+    }
+};
+
+MemberList: Vec<Commented<Member>> = {
+    => vec![],
+    <comments:CommentList> <m:Member> <rest:MemberList> => {
+        let mut list = vec![Commented::new(m, comments)];
+        list.extend(rest);
+        list
+    }
+};
+
+Member: Member = {
+    <type_:Type> <name:Identifier> <dims:ArrayDimensions> ";" => {
+        // Apply array dimensions to the type if present
+        let final_type = if dims.is_empty() {
+            type_
+        } else {
+            let mut element_type = Box::new(type_);
+            // Build nested array types from dimensions (reverse order)
+            for dim in dims.iter().rev() {
+                element_type = Box::new(Type::Array {
+                    element_type,
+                    dimensions: vec![*dim],
+                });
+            }
+            *element_type
+        };
+        Member {
+            type_: final_type,
+            name,
+        }
+    }
+};
+
+ArrayDimensions: Vec<u32> = {
+    => vec![],
+    "[" <dim:PositiveInteger> "]" <rest:ArrayDimensions> => {
+        let mut dims = vec![dim];
+        dims.extend(rest);
+        dims
+    }
+};
+
+Type: Type = {
+    // Basic types - must check longer types first
+    "unsigned" "long" "long" => Type::UnsignedLongLong,
+    "unsigned" "long" => Type::UnsignedLong,
+    "unsigned" "short" => Type::UnsignedShort,
+    "long" "long" => Type::LongLong,
+    "long" "double" => Type::LongDouble,
+    "long" => Type::Long,
+    "short" => Type::Short,
+    "float" => Type::Float,
+    "double" => Type::Double,
+    "boolean" => Type::Boolean,
+    "char" => Type::Char,
+    "wchar" => Type::WChar,
+    "octet" => Type::Octet,
+    "string" => Type::String,
+    "wstring" => Type::WString,
+    // Sequence type
+    "sequence" "<" <element_type:Type> ">" => Type::Sequence {
+        element_type: Box::new(element_type),
+        size: None,
+    },
+    "sequence" "<" <element_type:Type> "," <size:PositiveInteger> ">" => Type::Sequence {
+        element_type: Box::new(element_type),
+        size: Some(size),
+    },
+    // Scoped names (user-defined types)
+    <name:ScopedName> => Type::ScopedName(name),
+};
+
+ConstValue: ConstValue = {
+    <i:IntegerLiteral> => ConstValue::Integer(i),
+    <f:FloatLiteral> => ConstValue::Float(f),
+    <s:StringLiteral> => ConstValue::String(s),
+    "TRUE" => ConstValue::Boolean(true),
+    "FALSE" => ConstValue::Boolean(false),
+    <c:CharLiteral> => ConstValue::Char(c),
+    <name:ScopedName> => ConstValue::ScopedName(name),
+};
+
+IntegerLiteral: i64 = {
+    r"-?[1-9][0-9]*" => <>.parse().unwrap(),
+    r"-?0" => 0,
+    r"0x[0-9a-fA-F]+" => {
+        let s = <>.to_string();
+        i64::from_str_radix(&s[2..], 16).unwrap()
+    },
+    r"0[0-7]+" => {
+        let s = <>.to_string();
+        i64::from_str_radix(&s[1..], 8).unwrap()
+    },
+};
+
+FloatLiteral: f64 = {
+    r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?" => <>.parse().unwrap(),
+    r"-?[0-9]+[eE][+-]?[0-9]+" => <>.parse().unwrap(),
+};
+
+StringLiteral: String = {
+    r#""([^"\\]|\\.)*""# => {
+        let s = <>.to_string();
+        // Remove quotes and unescape
+        let mut chars = s.chars();
+        chars.next(); // skip opening quote
+        chars.next_back(); // skip closing quote
+        chars.collect::<String>()
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\r", "\r")
+            .replace("\\\\", "\\")
+            .replace("\\\"", "\"")
+    }
+};
+
+CharLiteral: char = {
+    r"'([^'\\]|\\.)'" => {
+        let s = <>.to_string();
+        let mut chars = s.chars();
+        chars.next(); // skip opening quote
+        chars.next_back(); // skip closing quote
+        let ch = chars.collect::<String>();
+        if ch.starts_with('\\') {
+            match ch.as_str() {
+                "\\n" => '\n',
+                "\\t" => '\t',
+                "\\r" => '\r',
+                "\\\\" => '\\',
+                "\\'" => '\'',
+                _ => ch.chars().next().unwrap_or('\0'),
+            }
+        } else {
+            ch.chars().next().unwrap_or('\0')
+        }
+    }
+};
+
+ScopedName: Vec<String> = {
+    "::" <id:Identifier> => vec![id],
+    <id:Identifier> => vec![id],
+    <id:Identifier> "::" <rest:ScopedName> => {
+        let mut list = vec![id];
+        list.extend(rest);
+        list
+    },
+    "::" <id:Identifier> "::" <rest:ScopedName> => {
+        let mut list = vec![id];
+        list.extend(rest);
+        list
+    }
+};
+
+Identifier: String = {
+    r"[a-zA-Z_][a-zA-Z0-9_]*" => <>.to_string()
+};
+
+PositiveInteger: u32 = {
+    <i:IntegerLiteral> => {
+        if i >= 0 {
+            i as u32
+        } else {
+            panic!("Expected positive integer, got negative")
+        }
+    }
+};
