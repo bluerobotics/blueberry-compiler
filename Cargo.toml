@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2024"
 build = "src/build.rs"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [build-dependencies]
 lalrpop = "0.22.2"
 
 [dependencies]
 lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+
+[target."cfg(target_arch = \"wasm32\")".dependencies]
+console_error_panic_hook = "0.1"
