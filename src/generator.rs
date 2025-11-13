@@ -1,7 +1,7 @@
 use crate::ast::{
-    Annotation, AnnotationParam, Commented, ConstDef, ConstValue, Definition, EnumDef,
-    FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, ModuleDef, StructDef,
-    Type, TypeDef,
+    Annotation, AnnotationParam, BinaryOperator, Commented, ConstDef, ConstValue, Definition,
+    EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, ModuleDef,
+    StructDef, Type, TypeDef, UnaryOperator,
 };
 use proc_macro2::{Delimiter, Ident, Literal, Spacing, Span, TokenStream, TokenTree};
 use quote::quote;
@@ -282,7 +282,68 @@ fn render_const_value_fragment(value: &ConstValue) -> LiteralFragment {
             LiteralFragment::Tokens(quote!(#literal))
         }
         ConstValue::ScopedName(parts) => LiteralFragment::Tokens(render_scoped_name_tokens(parts)),
+        ConstValue::UnaryOp { op, expr } => {
+            let operand_fragment = render_const_value_fragment(expr);
+            let operand_value = expr.as_ref();
+            let operand = operand_fragment.to_string();
+            let needs_parens = should_parenthesize(operand_value, UNARY_PRECEDENCE, false);
+            let rendered_operand = if needs_parens {
+                format!("({operand})")
+            } else {
+                operand
+            };
+            let op_str = match op {
+                UnaryOperator::Plus => "+",
+                UnaryOperator::Minus => "-",
+            };
+            LiteralFragment::Raw(format!("{op_str}{rendered_operand}"))
+        }
+        ConstValue::BinaryOp { op, left, right } => {
+            let left_fragment = render_const_value_fragment(left);
+            let right_fragment = render_const_value_fragment(right);
+            let parent_prec = binary_precedence(*op);
+            let left_value = left.as_ref();
+            let right_value = right.as_ref();
+            let mut left_rendered = left_fragment.to_string();
+            if should_parenthesize(left_value, parent_prec, true) {
+                left_rendered = format!("({left_rendered})");
+            }
+            let mut right_rendered = right_fragment.to_string();
+            if should_parenthesize(right_value, parent_prec, true) {
+                right_rendered = format!("({right_rendered})");
+            }
+            let op_str = match op {
+                BinaryOperator::Add => "+",
+                BinaryOperator::Subtract => "-",
+                BinaryOperator::Multiply => "*",
+                BinaryOperator::Divide => "/",
+            };
+            LiteralFragment::Raw(format!("{left_rendered} {op_str} {right_rendered}"))
+        }
     }
+}
+
+const UNARY_PRECEDENCE: u8 = 3;
+const PRIMARY_PRECEDENCE: u8 = 4;
+
+fn const_value_precedence(value: &ConstValue) -> u8 {
+    match value {
+        ConstValue::BinaryOp { op, .. } => binary_precedence(*op),
+        ConstValue::UnaryOp { .. } => UNARY_PRECEDENCE,
+        _ => PRIMARY_PRECEDENCE,
+    }
+}
+
+fn binary_precedence(op: BinaryOperator) -> u8 {
+    match op {
+        BinaryOperator::Add | BinaryOperator::Subtract => 1,
+        BinaryOperator::Multiply | BinaryOperator::Divide => 2,
+    }
+}
+
+fn should_parenthesize(child: &ConstValue, parent_prec: u8, wrap_equal: bool) -> bool {
+    let child_prec = const_value_precedence(child);
+    child_prec < parent_prec || (wrap_equal && child_prec == parent_prec)
 }
 
 fn render_import_scope_tokens(scope: &ImportScope) -> TokenStream {
