@@ -86,9 +86,19 @@ ModuleDef: ModuleDef = {
 };
 
 TypeDef: TypeDef = {
-    "typedef" <base_type:Type> <name:Identifier> ";" => TypeDef {
-        base_type,
-        name,
+    "typedef" <base_type:Type> <name:Identifier> <dims:ArrayDimensions> ";" => {
+        let base_type = if dims.is_empty() {
+            base_type
+        } else {
+            Type::Array {
+                element_type: Box::new(base_type),
+                dimensions: dims,
+            }
+        };
+        TypeDef {
+            base_type,
+            name,
+        }
     }
 };
 
@@ -165,15 +175,10 @@ Member: Member = {
         let final_type = if dims.is_empty() {
             type_
         } else {
-            let mut element_type = Box::new(type_);
-            // Build nested array types from dimensions (reverse order)
-            for dim in dims.iter().rev() {
-                element_type = Box::new(Type::Array {
-                    element_type,
-                    dimensions: vec![*dim],
-                });
+            Type::Array {
+                element_type: Box::new(type_),
+                dimensions: dims,
             }
-            *element_type
         };
         Member {
             type_: final_type,
