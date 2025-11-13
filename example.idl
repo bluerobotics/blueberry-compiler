@@ -14,6 +14,21 @@ module Example {
         PENDING
     };
 
+    // Second enum example
+    enum HwType : uint16 {
+        // This is the default value
+        UNDEFINED   = 0xffff,
+        // This is a StarFishDaq
+        SFDQ        = 0x0000,
+        BLUE_SERVO  = 0x0001,
+        LUMEN       = 0x0002,
+        // The ST family of development PCBs
+        NUCLEO      = 0x0003,
+        BLUE_ESC    = 0x0004,
+        GIGABOARD   = 0x0005,
+        BLUE_BRIDGE	= 0x0006
+    };
+
     // Struct example
     struct Person {
         string name;
