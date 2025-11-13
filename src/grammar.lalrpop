@@ -21,21 +21,60 @@ CommentList: Vec<String> = {
     }
 };
 
+AnnotationParam: AnnotationParam = {
+    <id:Identifier> "=" <value:ConstValue> => AnnotationParam::Named {
+        name: id,
+        value,
+    },
+};
+
+AnnotationParamList: Vec<AnnotationParam> = {
+    <p:AnnotationParam> => vec![p],
+    <p:AnnotationParam> "," <rest:AnnotationParamList> => {
+        let mut list = vec![p];
+        list.extend(rest);
+        list
+    }
+};
+
+Annotation: Annotation = {
+    // With parameters: @MyAnn(foo = 1, bar = "x")
+    "@" <name:ScopedName> "(" <params:AnnotationParamList> ")" => Annotation {
+        name,
+        params,
+    },
+
+    // No-parameter form must be written as @MyAnn()
+    "@" <name:ScopedName> "(" ")" => Annotation {
+        name,
+        params: Vec::new(),
+    },
+};
+
+AnnotationList: Vec<Annotation> = {
+    => vec![],
+    <a:Annotation> <rest:AnnotationList> => {
+        let mut list = vec![a];
+        list.extend(rest);
+        list
+    }
+};
+
 Definition: Definition = {
-    <comments:CommentList> <m:ModuleDef> => {
-        Definition::ModuleDef(Commented::new(m, comments))
+    <comments:CommentList> <annotations:AnnotationList> <m:ModuleDef> => {
+        Definition::ModuleDef(Commented::with_annotations(m, comments, annotations))
     },
-    <comments:CommentList> <t:TypeDef> => {
-        Definition::TypeDef(Commented::new(t, comments))
+    <comments:CommentList> <annotations:AnnotationList> <t:TypeDef> => {
+        Definition::TypeDef(Commented::with_annotations(t, comments, annotations))
     },
-    <comments:CommentList> <e:EnumDef> => {
-        Definition::EnumDef(Commented::new(e, comments))
+    <comments:CommentList> <annotations:AnnotationList> <e:EnumDef> => {
+        Definition::EnumDef(Commented::with_annotations(e, comments, annotations))
     },
-    <comments:CommentList> <s:StructDef> => {
-        Definition::StructDef(Commented::new(s, comments))
+    <comments:CommentList> <annotations:AnnotationList> <s:StructDef> => {
+        Definition::StructDef(Commented::with_annotations(s, comments, annotations))
     },
-    <comments:CommentList> <c:ConstDef> => {
-        Definition::ConstDef(Commented::new(c, comments))
+    <comments:CommentList> <annotations:AnnotationList> <c:ConstDef> => {
+        Definition::ConstDef(Commented::with_annotations(c, comments, annotations))
     },
 };
 
@@ -86,8 +125,8 @@ StructDef: StructDef = {
 
 MemberList: Vec<Commented<Member>> = {
     => vec![],
-    <comments:CommentList> <m:Member> <rest:MemberList> => {
-        let mut list = vec![Commented::new(m, comments)];
+    <comments:CommentList> <annotations:AnnotationList> <m:Member> <rest:MemberList> => {
+        let mut list = vec![Commented::with_annotations(m, comments, annotations)];
         list.extend(rest);
         list
     }
@@ -126,13 +165,9 @@ ArrayDimensions: Vec<u32> = {
 };
 
 Type: Type = {
-    // Basic types - must check longer types first
-    "unsigned" "long" "long" => Type::UnsignedLongLong,
-    "unsigned" "long" => Type::UnsignedLong,
-    "unsigned" "short" => Type::UnsignedShort,
-    "long" "long" => Type::LongLong,
-    "long" "double" => Type::LongDouble,
-    "long" => Type::Long,
+    // all 'long' variants go through LongSuffix
+    "long" <k:LongSuffix> => k,
+
     "short" => Type::Short,
     "float" => Type::Float,
     "double" => Type::Double,
@@ -142,6 +177,7 @@ Type: Type = {
     "octet" => Type::Octet,
     "string" => Type::String,
     "wstring" => Type::WString,
+
     // Sequence type
     "sequence" "<" <element_type:Type> ">" => Type::Sequence {
         element_type: Box::new(element_type),
@@ -151,8 +187,16 @@ Type: Type = {
         element_type: Box::new(element_type),
         size: Some(size),
     },
+
     // Scoped names (user-defined types)
     <name:ScopedName> => Type::ScopedName(name),
+};
+
+LongSuffix: Type = {
+    "long" => Type::LongLong,
+    "double" => Type::LongDouble,
+    // bare "long"
+    => Type::Long,
 };
 
 ConstValue: ConstValue = {
@@ -222,18 +266,23 @@ CharLiteral: char = {
 };
 
 ScopedName: Vec<String> = {
-    "::" <id:Identifier> => vec![id],
-    <id:Identifier> => vec![id],
-    <id:Identifier> "::" <rest:ScopedName> => {
+    // relative name:  id [:: id]*
+    <id:Identifier> <rest:ScopedNameTail*> => {
         let mut list = vec![id];
         list.extend(rest);
         list
     },
-    "::" <id:Identifier> "::" <rest:ScopedName> => {
+
+    // absolute name: ::id [:: id]*
+    "::" <id:Identifier> <rest:ScopedNameTail*> => {
         let mut list = vec![id];
         list.extend(rest);
         list
-    }
+    },
+};
+
+ScopedNameTail: String = {
+    "::" <id:Identifier> => id,
 };
 
 Identifier: String = {
