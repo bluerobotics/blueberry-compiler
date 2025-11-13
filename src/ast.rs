@@ -124,12 +124,62 @@ pub enum ImportScope {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstValue {
-    Integer(i64),
+    Integer(IntegerLiteral),
     Float(f64),
     String(String),
     Boolean(bool),
     Char(char),
     ScopedName(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntegerLiteral {
+    pub value: i64,
+    pub base: IntegerBase,
+}
+
+impl IntegerLiteral {
+    pub fn new(value: i64, base: IntegerBase) -> Self {
+        IntegerLiteral { value, base }
+    }
+
+    pub fn from_decimal_str(raw: &str) -> Self {
+        let value = raw.parse::<i64>().unwrap();
+        IntegerLiteral::new(value, IntegerBase::Decimal)
+    }
+
+    pub fn from_octal_str(raw: &str) -> Self {
+        let (is_negative, digits) = split_sign(raw);
+        let magnitude = i64::from_str_radix(digits, 8).unwrap();
+        let value = if is_negative { -magnitude } else { magnitude };
+        IntegerLiteral::new(value, IntegerBase::Octal)
+    }
+
+    pub fn from_hex_str(raw: &str) -> Self {
+        let (is_negative, digits) = split_sign(raw);
+        let digits = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+            .expect("hex literal must start with 0x or 0X");
+        let magnitude = i64::from_str_radix(digits, 16).unwrap();
+        let value = if is_negative { -magnitude } else { magnitude };
+        IntegerLiteral::new(value, IntegerBase::Hexadecimal)
+    }
+}
+
+fn split_sign(raw: &str) -> (bool, &str) {
+    if let Some(rest) = raw.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, raw)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IntegerBase {
+    Decimal,
+    Octal,
+    Hexadecimal,
 }
 
 /// Applied annotation (e.g. @foo::bar(a = 1, b = "x"))

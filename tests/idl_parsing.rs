@@ -1,5 +1,6 @@
 use rust_lalrpop_experiment::{
-    AnnotationParam, ConstValue, Definition, ImportScope, Type, TypeDef, parse_idl,
+    AnnotationParam, ConstValue, Definition, ImportScope, IntegerBase, IntegerLiteral, Type,
+    TypeDef, parse_idl,
 };
 use std::{fs, path::Path};
 
@@ -18,6 +19,20 @@ fn parse_example() -> Vec<Definition> {
 
 fn scoped(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
+}
+
+fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
+    match value {
+        ConstValue::Integer(literal) => {
+            assert_eq!(
+                literal.value, expected,
+                "expected integer value {}, found {}",
+                expected, literal.value
+            );
+            literal
+        }
+        other => panic!("expected integer const {}, found {:?}", expected, other),
+    }
 }
 
 #[test]
@@ -85,14 +100,18 @@ fn parses_enum_definitions() {
     let active = &enum_def.enumerators[0];
     assert_eq!(active.name, "ACTIVE");
     match &active.value {
-        Some(ConstValue::Integer(value)) => assert_eq!(*value, 0),
+        Some(value) => {
+            expect_integer(value, 0);
+        }
         other => panic!("expected ACTIVE to have integer value, found {:?}", other),
     }
 
     let inactive = &enum_def.enumerators[1];
     assert_eq!(inactive.name, "INACTIVE");
     match &inactive.value {
-        Some(ConstValue::Integer(value)) => assert_eq!(*value, 1),
+        Some(value) => {
+            expect_integer(value, 1);
+        }
         other => panic!("expected INACTIVE to have integer value, found {:?}", other),
     }
 
@@ -223,7 +242,7 @@ fn parses_constant_values() {
 
     let max_clients = consts.next().expect("MAX_CLIENTS const missing");
     assert_eq!(max_clients.name, "MAX_CLIENTS");
-    assert!(matches!(max_clients.value, ConstValue::Integer(42)));
+    expect_integer(&max_clients.value, 42);
 
     let pi_const = consts.next().expect("PI const missing");
     assert!(matches!(
@@ -248,6 +267,56 @@ fn parses_constant_values() {
 }
 
 #[test]
+fn parses_integer_literal_bases() {
+    let defs = parse_fixture("integer_literals.idl");
+    assert_eq!(defs.len(), 6);
+
+    fn expect_const_value<'a>(defs: &'a [Definition], name: &str) -> &'a ConstValue {
+        defs.iter()
+            .find_map(|def| match def {
+                Definition::ConstDef(const_def) if const_def.node.name == name => {
+                    Some(&const_def.node.value)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing const {}", name))
+    }
+
+    let decimal = expect_const_value(&defs, "DECIMAL_TWELVE");
+    assert!(matches!(
+        expect_integer(decimal, 12).base,
+        IntegerBase::Decimal
+    ));
+
+    let octal = expect_const_value(&defs, "OCTAL_TWELVE");
+    assert!(matches!(expect_integer(octal, 12).base, IntegerBase::Octal));
+
+    let uppercase_hex = expect_const_value(&defs, "HEX_TWELVE");
+    assert!(matches!(
+        expect_integer(uppercase_hex, 12).base,
+        IntegerBase::Hexadecimal
+    ));
+
+    let lower_hex = expect_const_value(&defs, "LOWER_HEX");
+    assert!(matches!(
+        expect_integer(lower_hex, 26).base,
+        IntegerBase::Hexadecimal
+    ));
+
+    let negative_octal = expect_const_value(&defs, "NEGATIVE_OCTAL");
+    assert!(matches!(
+        expect_integer(negative_octal, -15).base,
+        IntegerBase::Octal
+    ));
+
+    let negative_hex = expect_const_value(&defs, "NEGATIVE_HEX");
+    assert!(matches!(
+        expect_integer(negative_hex, -42).base,
+        IntegerBase::Hexadecimal
+    ));
+}
+
+#[test]
 fn attaches_annotations_and_comments() {
     let defs = parse_fixture("annotations.idl");
     assert_eq!(defs.len(), 1);
@@ -269,7 +338,7 @@ fn attaches_annotations_and_comments() {
     match &applied.params[0] {
         AnnotationParam::Named { name, value } => {
             assert_eq!(name, "role");
-            assert!(matches!(value, ConstValue::Integer(1)));
+            expect_integer(value, 1);
         }
     }
 

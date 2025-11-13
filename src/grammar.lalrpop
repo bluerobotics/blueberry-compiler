@@ -256,17 +256,11 @@ ConstValue: ConstValue = {
     <name:ScopedName> => ConstValue::ScopedName(name),
 };
 
-IntegerLiteral: i64 = {
-    r"-?[1-9][0-9]*" => <>.parse().unwrap(),
-    r"-?0" => 0,
-    r"0x[0-9a-fA-F]+" => {
-        let s = <>.to_string();
-        i64::from_str_radix(&s[2..], 16).unwrap()
-    },
-    r"0[0-7]+" => {
-        let s = <>.to_string();
-        i64::from_str_radix(&s[1..], 8).unwrap()
-    },
+IntegerLiteral: IntegerLiteral = {
+    r"-?0[xX][0-9a-fA-F]+" => IntegerLiteral::from_hex_str(<>),
+    r"-?0[0-7]+" => IntegerLiteral::from_octal_str(<>),
+    r"-?0" => IntegerLiteral::from_octal_str(<>),
+    r"-?[1-9][0-9]*" => IntegerLiteral::from_decimal_str(<>),
 };
 
 FloatLiteral: f64 = {
@@ -338,8 +332,8 @@ Identifier: String = {
 
 PositiveInteger: u32 = {
     <i:IntegerLiteral> => {
-        if i >= 0 {
-            i as u32
+        if i.value >= 0 {
+            i.value as u32
         } else {
             panic!("Expected positive integer, got negative")
         }
