@@ -116,7 +116,7 @@ fn parses_struct_members_and_arrays() {
 #[test]
 fn parses_typedefs_sequences_and_scoped_names() {
     let defs = parse_fixture("typedefs.idl");
-    assert_eq!(defs.len(), 4);
+    assert_eq!(defs.len(), 6);
 
     let mut iter = defs.iter();
 
@@ -153,6 +153,28 @@ fn parses_typedefs_sequences_and_scoped_names() {
             assert_eq!(names, &scoped(&["Example", "Person"]));
         }
         other => panic!("expected scoped name typedef, found {:?}", other),
+    }
+
+    match &expect_typedef(iter.next().unwrap()).base_type {
+        Type::Array {
+            element_type,
+            dimensions,
+        } => {
+            assert!(matches!(**element_type, Type::Octet));
+            assert_eq!(dimensions, &vec![32]);
+        }
+        other => panic!("expected 1D array typedef, found {:?}", other),
+    }
+
+    match &expect_typedef(iter.next().unwrap()).base_type {
+        Type::Array {
+            element_type,
+            dimensions,
+        } => {
+            assert!(matches!(**element_type, Type::Octet));
+            assert_eq!(dimensions, &vec![3, 3]);
+        }
+        other => panic!("expected 2D array typedef, found {:?}", other),
     }
 }
 
