@@ -26,36 +26,35 @@ impl<T> Commented<T> {
 
 /// Trait for uniform access to comments
 pub trait HasComments {
-  fn comments(&self) -> &[String];
-  fn comments_mut(&mut self) -> &mut Vec<String>;
+    fn comments(&self) -> &[String];
+    fn comments_mut(&mut self) -> &mut Vec<String>;
 }
 
 impl<T> HasComments for Commented<T> {
-  fn comments(&self) -> &[String] {
-      &self.comments
-  }
+    fn comments(&self) -> &[String] {
+        &self.comments
+    }
 
-  fn comments_mut(&mut self) -> &mut Vec<String> {
-      &mut self.comments
-  }
+    fn comments_mut(&mut self) -> &mut Vec<String> {
+        &mut self.comments
+    }
 }
 
 /// Trait for uniform access to annotations
 pub trait HasAnnotations {
-  fn annotations(&self) -> &[Annotation];
-  fn annotations_mut(&mut self) -> &mut Vec<Annotation>;
+    fn annotations(&self) -> &[Annotation];
+    fn annotations_mut(&mut self) -> &mut Vec<Annotation>;
 }
 
 impl<T> HasAnnotations for Commented<T> {
-  fn annotations(&self) -> &[Annotation] {
-      &self.annotations
-  }
+    fn annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
 
-  fn annotations_mut(&mut self) -> &mut Vec<Annotation> {
-      &mut self.annotations
-  }
+    fn annotations_mut(&mut self) -> &mut Vec<Annotation> {
+        &mut self.annotations
+    }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Definition {

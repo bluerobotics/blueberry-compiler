@@ -3,8 +3,8 @@ use lalrpop_util::lalrpop_mod;
 pub mod ast;
 lalrpop_mod!(grammar);
 
-pub use grammar::*;
 pub use ast::*;
+pub use grammar::*;
 
 /// Parse an IDL file string into a vector of definitions
 pub fn parse_idl(input: &str) -> Result<Vec<Definition>, String> {
