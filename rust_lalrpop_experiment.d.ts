@@ -1,5 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * Parse and reserialize the given IDL, returning a JS object with both results.
+ */
+export function analyze_idl_wasm(input: string): any;
 export function wasm_start(): void;
 /**
  * Parse the given IDL source and return either the formatted AST
@@ -11,11 +15,14 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
+  readonly analyze_idl_wasm: (a: number, b: number) => any;
   readonly parse_idl_wasm: (a: number, b: number) => [number, number];
   readonly wasm_start: () => void;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_exn_store: (a: number) => void;
+  readonly __externref_table_alloc: () => number;
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_start: () => void;
 }
