@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blueberry IDL Playground</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/darcula.css" />
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        html, body {
+            height: 100%;
+        }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0d1117;
+            color: #f0f6fc;
+            display: flex;
+            flex-direction: column;
+        }
+        header.site-header {
+            padding: 0.75rem 1.5rem;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+        }
+        main {
+            flex: 1;
+            display: flex;
+            gap: 1px;
+            background: #30363d;
+            min-height: 0; /* allow children to stretch */
+        }
+        section.pane {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        section.pane header {
+            padding: 0.75rem 1rem;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            font-weight: 600;
+        }
+        section.pane header span {
+            display: block;
+            font-size: 0.85rem;
+            opacity: 0.7;
+            font-weight: 400;
+        }
+        .pane-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #0d1117;
+            min-height: 0;
+        }
+        .CodeMirror {
+            flex: 1;
+            height: 100%;
+            font-family: "JetBrains Mono", "Fira Code", monospace;
+            font-size: 0.95rem;
+            background: #0d1117;
+            color: #f0f6fc;
+        }
+        .CodeMirror-scroll {
+            min-height: 100%;
+        }
+        #parser-output {
+            flex: 1;
+            margin: 0;
+            background: #0d1117;
+            color: #f0f6fc;
+            padding: 1rem;
+            font-family: "JetBrains Mono", "Fira Code", monospace;
+            font-size: 0.9rem;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+        @media (max-width: 900px) {
+            main {
+                flex-direction: column;
+            }
+            .CodeMirror,
+            #parser-output {
+                min-height: 40vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="site-header">
+        <h1>Blueberry IDL Playground</h1>
+    </header>
+    <main>
+        <section class="pane">
+            <header>
+                <div>Input IDL</div>
+                <span>CodeMirror highlighting & live parsing</span>
+            </header>
+            <div class="pane-body">
+                <textarea id="idl-input" spellcheck="false"></textarea>
+            </div>
+        </section>
+        <section class="pane">
+            <header>
+                <div>Parser Output</div>
+                <span>Formatted AST or error message</span>
+            </header>
+            <pre id="parser-output">Loading parser...</pre>
+        </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
+    <script type="module">
+        import init, { parse_idl_wasm } from "/rust_lalrpop_experiment.js";
+
+        const textarea = document.getElementById("idl-input");
+        const outputEl = document.getElementById("parser-output");
+
+        function renderResult(text) {
+            try {
+                outputEl.textContent = parse_idl_wasm(text);
+            } catch (err) {
+                outputEl.textContent = `Runtime error: ${err}`;
+            }
+        }
+
+        async function bootstrap() {
+            await init();
+
+            const editor = CodeMirror.fromTextArea(textarea, {
+                mode: "text/x-csrc",
+                theme: "darcula",
+                lineNumbers: true,
+                matchBrackets: true,
+                autofocus: true,
+                indentUnit: 4,
+                tabSize: 4,
+            });
+
+            // Ensure CodeMirror fills the pane after layout stabilizes
+            requestAnimationFrame(() => editor.refresh());
+
+            const sample = `module Example {\n    typedef long MyLong;\n\n    enum Status {\n        ACTIVE,\n        INACTIVE,\n        PENDING\n    };\n};`;
+
+            editor.setValue(sample);
+            renderResult(sample);
+
+            editor.on("change", (instance) => {
+                const value = instance.getValue();
+                renderResult(value);
+            });
+        }
+
+        bootstrap().catch((err) => {
+            outputEl.textContent = `Failed to initialize parser: ${err}`;
+        });
+    </script>
+</body>
+</html>
