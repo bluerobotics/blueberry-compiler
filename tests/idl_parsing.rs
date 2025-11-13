@@ -1,4 +1,6 @@
-use rust_lalrpop_experiment::{AnnotationParam, ConstValue, Definition, Type, TypeDef, parse_idl};
+use rust_lalrpop_experiment::{
+    AnnotationParam, ConstValue, Definition, ImportScope, Type, TypeDef, parse_idl,
+};
 use std::{fs, path::Path};
 
 fn parse_fixture(name: &str) -> Vec<Definition> {
@@ -16,6 +18,34 @@ fn parse_example() -> Vec<Definition> {
 
 fn scoped(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn parses_import_declarations() {
+    let defs = parse_fixture("imports.idl");
+    assert_eq!(defs.len(), 3);
+
+    fn expect_import(def: &Definition) -> &rust_lalrpop_experiment::ImportDef {
+        match def {
+            Definition::ImportDef(i) => &i.node,
+            other => panic!("expected import declaration, found {:?}", other),
+        }
+    }
+
+    match &expect_import(&defs[0]).scope {
+        ImportScope::Scoped(path) => assert_eq!(path, &scoped(&["Example", "Utilities"])),
+        other => panic!("expected scoped import path, found {:?}", other),
+    }
+
+    match &expect_import(&defs[1]).scope {
+        ImportScope::Scoped(path) => assert_eq!(path, &scoped(&["Root", "Systems", "Diagnostics"])),
+        other => panic!("expected absolute scoped import path, found {:?}", other),
+    }
+
+    match &expect_import(&defs[2]).scope {
+        ImportScope::String(path) => assert_eq!(path, "external/sensors.idl"),
+        other => panic!("expected string import path, found {:?}", other),
+    }
 }
 
 #[test]

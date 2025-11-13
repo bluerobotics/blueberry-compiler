@@ -76,6 +76,9 @@ Definition: Definition = {
     <comments:CommentList> <annotations:AnnotationList> <c:ConstDef> => {
         Definition::ConstDef(Commented::with_annotations(c, comments, annotations))
     },
+    <comments:CommentList> <annotations:AnnotationList> <i:ImportDef> => {
+        Definition::ImportDef(Commented::with_annotations(i, comments, annotations))
+    },
 };
 
 ModuleDef: ModuleDef = {
@@ -108,6 +111,15 @@ ConstDef: ConstDef = {
         name,
         value,
     }
+};
+
+ImportDef: ImportDef = {
+    "import" <scope:ImportedScope> ";" => ImportDef { scope }
+};
+
+ImportedScope: ImportScope = {
+    <name:ScopedName> => ImportScope::Scoped(name),
+    <path:StringLiteral> => ImportScope::String(path),
 };
 
 EnumDef: EnumDef = {

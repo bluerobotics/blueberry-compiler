@@ -63,6 +63,7 @@ pub enum Definition {
     StructDef(Commented<StructDef>),
     ModuleDef(Commented<ModuleDef>),
     ConstDef(Commented<ConstDef>),
+    ImportDef(Commented<ImportDef>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +109,17 @@ pub struct ConstDef {
     pub const_type: Type,
     pub name: String,
     pub value: ConstValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDef {
+    pub scope: ImportScope,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportScope {
+    Scoped(Vec<String>),
+    String(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
