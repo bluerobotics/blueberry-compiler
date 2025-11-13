@@ -1,0 +1,15 @@
+{
+  "name": "rust-lalrpop-experiment",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "rust_lalrpop_experiment_bg.wasm",
+    "rust_lalrpop_experiment.js",
+    "rust_lalrpop_experiment.d.ts"
+  ],
+  "main": "rust_lalrpop_experiment.js",
+  "types": "rust_lalrpop_experiment.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
