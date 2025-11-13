@@ -117,10 +117,44 @@ fn parses_enum_definitions() {
 
     let pending = &enum_def.enumerators[2];
     assert_eq!(pending.name, "PENDING");
-    assert!(
-        pending.value.is_none(),
-        "PENDING should not assign an explicit value"
-    );
+    match &pending.value {
+        Some(ConstValue::Integer(il)) => assert_eq!(il.value, 2),
+        other => panic!(
+            "expected PENDING to inherit integer value, found {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn infers_missing_enum_values() {
+    let defs = parse_fixture("enum_auto_values.idl");
+    assert_eq!(defs.len(), 1);
+
+    let enum_def = match &defs[0] {
+        Definition::EnumDef(def) => &def.node,
+        other => panic!("expected enum definition, found {:?}", other),
+    };
+
+    let expected = [
+        ("FIRST", 0),
+        ("SECOND", 1),
+        ("THIRD", 10),
+        ("FOURTH", 11),
+        ("FIFTH", 12),
+    ];
+
+    assert_eq!(enum_def.enumerators.len(), expected.len());
+    for (member, (name, value)) in enum_def.enumerators.iter().zip(expected) {
+        assert_eq!(&member.name, name);
+        match &member.value {
+            Some(ConstValue::Integer(actual)) => assert_eq!(actual.value, value),
+            other => panic!(
+                "expected {} to resolve to integer value {}, found {:?}",
+                name, value, other
+            ),
+        }
+    }
 }
 
 #[test]
