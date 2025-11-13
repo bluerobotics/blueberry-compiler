@@ -2,6 +2,7 @@
 name = "rust-lalrpop-experiment"
 version = "0.1.0"
 edition = "2024"
+build = "src/build.rs"
 
 [build-dependencies]
 lalrpop = "0.22.2"
