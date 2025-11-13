@@ -21,6 +21,17 @@ fn scoped(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+fn expect_const_value<'a>(defs: &'a [Definition], name: &str) -> &'a ConstValue {
+    defs.iter()
+        .find_map(|def| match def {
+            Definition::ConstDef(const_def) if const_def.node.name == name => {
+                Some(&const_def.node.value)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing const {}", name))
+}
+
 fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
     match value {
         ConstValue::Integer(literal) => {
@@ -305,17 +316,6 @@ fn parses_integer_literal_bases() {
     let defs = parse_fixture("integer_literals.idl");
     assert_eq!(defs.len(), 6);
 
-    fn expect_const_value<'a>(defs: &'a [Definition], name: &str) -> &'a ConstValue {
-        defs.iter()
-            .find_map(|def| match def {
-                Definition::ConstDef(const_def) if const_def.node.name == name => {
-                    Some(&const_def.node.value)
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("missing const {}", name))
-    }
-
     let decimal = expect_const_value(&defs, "DECIMAL_TWELVE");
     assert!(matches!(
         expect_integer(decimal, 12).base,
@@ -348,6 +348,55 @@ fn parses_integer_literal_bases() {
         expect_integer(negative_hex, -42).base,
         IntegerBase::Hexadecimal
     ));
+}
+
+#[test]
+fn parses_floating_point_literals() {
+    let defs = parse_fixture("floating_literals.idl");
+    assert_eq!(defs.len(), 7);
+
+    fn expect_float(value: &ConstValue) -> f64 {
+        match value {
+            ConstValue::Float(v) => *v,
+            other => panic!("expected float const, found {:?}", other),
+        }
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        let diff = (actual - expected).abs();
+        let scale = expected.abs().max(1.0);
+        let tolerance = f64::EPSILON * scale * 4.0;
+        assert!(
+            diff <= tolerance,
+            "expected float {} within {} but got {}",
+            expected,
+            tolerance,
+            actual
+        );
+    }
+
+    assert_close(
+        expect_float(expect_const_value(&defs, "FRACTION_ONLY")),
+        0.625,
+    );
+    assert_close(
+        expect_float(expect_const_value(&defs, "INTEGER_WITH_TRAILING_DOT")),
+        42.0,
+    );
+    assert_close(expect_float(expect_const_value(&defs, "EXP_ONLY")), 7000.0);
+    assert_close(
+        expect_float(expect_const_value(&defs, "FRACTION_WITH_EXP")),
+        5.0,
+    );
+    assert_close(
+        expect_float(expect_const_value(&defs, "DECIMAL_WITH_NEG_EXP")),
+        1.2,
+    );
+    assert_close(expect_float(expect_const_value(&defs, "UPPER_EXP")), 25.0);
+    assert_close(
+        expect_float(expect_const_value(&defs, "NEGATIVE_FRACTION")),
+        -0.125,
+    );
 }
 
 #[test]
