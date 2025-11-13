@@ -194,8 +194,11 @@ ArrayDimensions: Vec<u32> = {
 Type: Type = {
     // all 'long' variants go through LongSuffix
     "long" <k:LongSuffix> => k,
-
     "short" => Type::Short,
+    "uint8" => Type::Octet,
+    "uint16" => Type::UnsignedShort,
+    "uint32" => Type::UnsignedLong,
+    "uint64" => Type::UnsignedLongLong,
     "float" => Type::Float,
     "double" => Type::Double,
     "boolean" => Type::Boolean,
