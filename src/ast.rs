@@ -80,7 +80,15 @@ pub struct TypeDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDef {
     pub name: String,
-    pub enumerators: Vec<String>,
+    pub base_type: Option<Type>,
+    pub enumerators: Vec<EnumMember>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumMember {
+    pub name: String,
+    pub value: Option<ConstValue>,
+    pub comments: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

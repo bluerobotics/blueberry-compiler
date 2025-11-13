@@ -101,19 +101,46 @@ ConstDef: ConstDef = {
 };
 
 EnumDef: EnumDef = {
-    "enum" <name:Identifier> "{" <enumerators:EnumeratorList> "}" ";" => EnumDef {
+    "enum" <name:Identifier> <base:EnumBaseType?> "{" <enumerators:EnumMemberList> "}" ";" => EnumDef {
         name,
+        base_type: base,
         enumerators,
     }
 };
 
-EnumeratorList: Vec<String> = {
-    <id:Identifier> => vec![id],
-    <id:Identifier> "," <rest:EnumeratorList> => {
-        let mut list = vec![id];
+EnumBaseType: Type = {
+    ":" <type_:Type> => type_,
+};
+
+EnumMemberList: Vec<EnumMember> = {
+    => vec![],
+    <entry:EnumMember> <rest:EnumMemberTail> => {
+        let mut list = vec![entry];
         list.extend(rest);
         list
     }
+};
+
+EnumMemberTail: Vec<EnumMember> = {
+    => vec![],
+    <_sep:EnumSeparator> <rest:EnumMemberList> => rest,
+};
+
+EnumSeparator: () = {
+    "," => (),
+    ";" => (),
+};
+
+EnumMember: EnumMember = {
+    <comments:CommentList> <name:Identifier> <value:EnumValue?> => EnumMember {
+        name,
+        value,
+        comments,
+    }
+};
+
+EnumValue: ConstValue = {
+    "=" <value:ConstValue> => value,
 };
 
 StructDef: StructDef = {
