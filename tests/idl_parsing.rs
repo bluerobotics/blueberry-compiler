@@ -450,7 +450,7 @@ fn attaches_annotations_and_comments() {
 
     assert_eq!(
         struct_def.comments,
-        vec!["// Tests annotation parsing and comment capture."]
+        vec!["Tests annotation parsing and comment capture."]
     );
     assert_eq!(struct_def.annotations.len(), 1);
 
@@ -467,7 +467,7 @@ fn attaches_annotations_and_comments() {
     let members = &struct_def.node.members;
     assert_eq!(members.len(), 2);
 
-    assert_eq!(members[0].comments, vec!["// Primary identifier"]);
+    assert_eq!(members[0].comments, vec!["Primary identifier"]);
     assert_eq!(members[0].annotations.len(), 1);
     let member_ann = &members[0].annotations[0];
     assert_eq!(member_ann.name, vec!["Wire", "Encoded"]);
