@@ -8,8 +8,16 @@ pub IdlFile: Vec<Definition> = {
 
 // Comment parsing rules
 Comment: String = {
-    r"//[^\n]*" => <>.to_string(),
-    r"/\*([^*]|\*+[^*/])*\*+/" => <>.to_string(),
+    r"//[^\n]*" => {
+        let text = <>.trim_start_matches("//").trim_start();
+        text.to_string()
+    },
+    r"/\*([^*]|\*+[^*/])*\*+/" => {
+        let raw = <>;
+        let without_start = raw.trim_start_matches("/*");
+        let without_end = without_start.trim_end_matches("*/");
+        without_end.trim().to_string()
+    },
 };
 
 CommentList: Vec<String> = {
