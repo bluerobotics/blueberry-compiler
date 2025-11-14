@@ -155,8 +155,12 @@ impl IdlGenerator {
 
     fn emit_comments(&mut self, comments: &[String], indent: usize) {
         for comment in comments {
+            if comment.is_empty() {
+                self.write_comment_line(indent, "");
+                continue;
+            }
             for line in comment.lines() {
-                self.write_raw_line(indent, line);
+                self.write_comment_line(indent, line);
             }
         }
     }
@@ -198,6 +202,17 @@ impl IdlGenerator {
         self.write_indent(indent);
         self.buffer.push_str(text);
         self.buffer.push_str(suffix);
+        self.buffer.push('\n');
+    }
+
+    fn write_comment_line(&mut self, indent: usize, content: &str) {
+        self.write_indent(indent);
+        self.buffer.push_str("//");
+        let trimmed = content.trim_end();
+        if !trimmed.is_empty() {
+            self.buffer.push(' ');
+            self.buffer.push_str(trimmed);
+        }
         self.buffer.push('\n');
     }
 
