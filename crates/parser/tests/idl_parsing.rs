@@ -1,4 +1,4 @@
-use rust_lalrpop_experiment::{
+use blueberry_parser::{
     AnnotationParam, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral, ImportScope,
     IntegerBase, IntegerLiteral, Type, TypeDef, parse_idl,
 };
@@ -87,7 +87,7 @@ fn parses_import_declarations() {
     let defs = parse_fixture("imports.idl");
     assert_eq!(defs.len(), 3);
 
-    fn expect_import(def: &Definition) -> &rust_lalrpop_experiment::ImportDef {
+    fn expect_import(def: &Definition) -> &blueberry_parser::ImportDef {
         match def {
             Definition::ImportDef(i) => &i.node,
             other => panic!("expected import declaration, found {:?}", other),

@@ -4,10 +4,8 @@ use evalexpr::{Value, eval};
 use lalrpop_util::lalrpop_mod;
 
 pub mod ast;
-pub mod generator;
+
 lalrpop_mod!(grammar);
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
 
 pub use ast::*;
 pub use grammar::*;

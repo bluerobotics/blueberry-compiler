@@ -1,22 +1,8 @@
-[package]
-name = "rust-lalrpop-experiment"
-version = "0.1.0"
-edition = "2024"
-build = "src/build.rs"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[build-dependencies]
-lalrpop = "0.22.2"
-
-[dependencies]
-evalexpr = "11"
-lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
-wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
-proc-macro2 = "1"
-quote = "1"
-js-sys = "0.3"
-
-[target."cfg(target_arch = \"wasm32\")".dependencies]
-console_error_panic_hook = "0.1"
+[workspace]
+members = [
+    "crates/ast",
+    "crates/parser",
+    "crates/generators/idl",
+    "crates/wasm",
+]
+resolver = "2"

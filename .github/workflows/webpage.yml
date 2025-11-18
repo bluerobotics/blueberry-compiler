@@ -24,7 +24,7 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build
-        run: wasm-pack build --target web
+        run: wasm-pack build crates/wasm --target web --out-dir ../../pkg --out-name blueberry_wasm
 
       - name: Organize files
         run: |

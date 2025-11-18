@@ -133,7 +133,7 @@
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
     <script type="module">
-        import init, { analyze_idl_wasm } from "./rust_lalrpop_experiment.js";
+        import init, { analyze_idl_wasm } from "./blueberry_wasm.js";
 
         const textarea = document.getElementById("idl-input");
         const parserOutputEl = document.getElementById("parser-output");
@@ -181,7 +181,6 @@
                 lineWrapping: true,
             });
 
-            // Ensure CodeMirror panes fill layout after styles settle
             requestAnimationFrame(() => {
                 editor.refresh();
                 generatedEditor.refresh();

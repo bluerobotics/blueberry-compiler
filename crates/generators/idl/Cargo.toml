@@ -1,0 +1,12 @@
+[package]
+name = "blueberry-idl-generator"
+edition = "2024"
+version = "0.1.0"
+
+[dependencies]
+blueberry-ast = { path = "../../ast", version = "0.1.0" }
+proc-macro2 = "1"
+quote = "1"
+
+[dev-dependencies]
+blueberry-parser = { path = "../../parser", version = "0.1.0" }

@@ -1,10 +1,10 @@
-use crate::ast::{
+use blueberry_ast::{
     Annotation, AnnotationParam, BinaryOperator, Commented, ConstDef, ConstValue, Definition,
     EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, ModuleDef,
     StructDef, Type, TypeDef, UnaryOperator,
 };
-use proc_macro2::{Delimiter, Ident, Literal, Spacing, Span, TokenStream, TokenTree};
-use quote::quote;
+use proc_macro2::{Delimiter, Ident, Literal, Spacing, TokenStream, TokenTree};
+use quote::{format_ident, quote};
 use std::{fmt, fs, path::Path, str::FromStr};
 
 /// Serialize a slice of definitions back into an IDL source string.
@@ -420,7 +420,7 @@ impl fmt::Display for LiteralFragment {
 }
 
 fn ident(name: &str) -> Ident {
-    Ident::new(name, Span::call_site())
+    format_ident!("{}", name)
 }
 
 fn literal_string_tokens(text: &str) -> TokenStream {
@@ -644,7 +644,7 @@ enum PrevKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_idl;
+    use blueberry_parser::parse_idl;
     use std::{
         fs,
         path::PathBuf,
@@ -686,9 +686,11 @@ mod tests {
     }
 
     fn load_fixture(name: &str) -> Vec<Definition> {
-        let path = format!("tests/fixtures/{name}");
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../parser/tests/fixtures");
+        let path = fixture_dir.join(name);
         let input = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path, err));
+            .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
         parse_idl(&input).expect("fixture should parse successfully")
     }
 }
