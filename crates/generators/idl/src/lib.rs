@@ -89,6 +89,17 @@ impl IdlGenerator {
         self.emit_comments(&enum_def.comments, indent);
         self.emit_annotations(&enum_def.annotations, indent);
         let name = ident(&enum_def.node.name);
+        let assignment_width = enum_def
+            .node
+            .enumerators
+            .iter()
+            .filter(|member| member.value.is_some())
+            .map(|member| {
+                let member_ident = ident(&member.name);
+                tokens_to_line(quote!(#member_ident)).len()
+            })
+            .max()
+            .unwrap_or(0);
         let header = if let Some(base_type) = &enum_def.node.base_type {
             let base_tokens = render_type_tokens(base_type);
             quote!(enum #name : #base_tokens)
@@ -102,7 +113,8 @@ impl IdlGenerator {
             let suffix = ",";
             if let Some(value) = &member.value {
                 let value_fragment = render_const_value_fragment(value);
-                let line = format_assignment(quote!(#member_name =), &value_fragment);
+                let line =
+                    format_aligned_enum_assignment(&member_name, assignment_width, &value_fragment);
                 self.write_raw_line_with_suffix(indent + 1, &line, suffix);
             } else {
                 let tokens = quote!(#member_name);
@@ -371,6 +383,17 @@ fn format_assignment(lhs: TokenStream, value: &LiteralFragment) -> String {
     }
     lhs_text.push_str(&value.to_string());
     lhs_text
+}
+
+fn format_aligned_enum_assignment(name: &Ident, width: usize, value: &LiteralFragment) -> String {
+    let name_text = tokens_to_line(quote!(#name));
+    let padding = width.saturating_sub(name_text.len()) + 1;
+    let mut line = String::new();
+    line.push_str(&name_text);
+    line.push_str(&" ".repeat(padding));
+    line.push_str("= ");
+    line.push_str(&value.to_string());
+    line
 }
 
 fn format_fixed_point_literal(literal: &FixedPointLiteral) -> String {
@@ -686,8 +709,19 @@ mod tests {
         let defs = load_fixture("enum_only.idl");
         let emitted = generate_idl(&defs);
         assert!(
-            emitted.contains("    PENDING = 2,\n};"),
+            emitted.contains("    PENDING  = 2,\n};"),
             "expected generated enum to include trailing comma:\n{}",
+            emitted
+        );
+    }
+
+    #[test]
+    fn aligns_enum_assignments() {
+        let defs = load_fixture("enum_only.idl");
+        let emitted = generate_idl(&defs);
+        assert!(
+            emitted.contains("    ACTIVE   = 00,\n    INACTIVE = 1,\n    PENDING  = 2"),
+            "expected enum assignments to align:\n{}",
             emitted
         );
     }
