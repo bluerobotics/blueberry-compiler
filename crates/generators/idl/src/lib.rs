@@ -1,7 +1,7 @@
 use blueberry_ast::{
     Annotation, AnnotationParam, BinaryOperator, Commented, ConstDef, ConstValue, Definition,
-    EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, ModuleDef,
-    StructDef, Type, TypeDef, UnaryOperator,
+    EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, MessageDef,
+    ModuleDef, StructDef, Type, TypeDef, UnaryOperator,
 };
 use proc_macro2::{Delimiter, Ident, Literal, Spacing, TokenStream, TokenTree};
 use quote::{format_ident, quote};
@@ -59,6 +59,7 @@ impl IdlGenerator {
             Definition::TypeDef(typedef) => self.emit_typedef(typedef, indent),
             Definition::EnumDef(enum_def) => self.emit_enum(enum_def, indent),
             Definition::StructDef(struct_def) => self.emit_struct(struct_def, indent),
+            Definition::MessageDef(message_def) => self.emit_message(message_def, indent),
             Definition::ConstDef(const_def) => self.emit_const(const_def, indent),
             Definition::ImportDef(import_def) => self.emit_import(import_def, indent),
         }
@@ -131,6 +132,25 @@ impl IdlGenerator {
         let header = quote!(struct #name);
         self.write_tokens_with_suffix(indent, header, " {");
         for member in &struct_def.node.members {
+            self.emit_comments(&member.comments, indent + 1);
+            self.emit_annotations(&member.annotations, indent + 1);
+            let member_name = ident(&member.node.name);
+            let (base_type, dims) = split_array_type(&member.node.type_);
+            let base_tokens = render_type_tokens(base_type);
+            let dims_tokens = render_array_dimensions_tokens(dims);
+            let line = quote!(#base_tokens #member_name #dims_tokens ;);
+            self.write_tokens_line(indent + 1, line);
+        }
+        self.write_raw_line(indent, "};");
+    }
+
+    fn emit_message(&mut self, message_def: &Commented<MessageDef>, indent: usize) {
+        self.emit_comments(&message_def.comments, indent);
+        self.emit_annotations(&message_def.annotations, indent);
+        let name = ident(&message_def.node.name);
+        let header = quote!(message #name);
+        self.write_tokens_with_suffix(indent, header, " {");
+        for member in &message_def.node.members {
             self.emit_comments(&member.comments, indent + 1);
             self.emit_annotations(&member.annotations, indent + 1);
             let member_name = ident(&member.node.name);
