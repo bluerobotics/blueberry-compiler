@@ -696,6 +696,94 @@ fn attaches_annotations_and_comments() {
 }
 
 #[test]
+fn parses_message_definitions() {
+    let defs = parse_fixture("message_basic.idl");
+    assert_eq!(defs.len(), 1);
+
+    let message = match &defs[0] {
+        Definition::MessageDef(def) => def,
+        other => panic!("expected message definition, found {:?}", other),
+    };
+
+    assert_eq!(message.node.name, "StatusUpdate");
+    assert_eq!(message.annotations.len(), 2);
+    assert_eq!(message.annotations[0].name, scoped(&["topic"]));
+    assert_eq!(message.annotations[1].name, scoped(&["message_key"]));
+
+    match &message.annotations[0].params[0] {
+        AnnotationParam::Named { name, value } => {
+            assert_eq!(name, "value");
+            match value {
+                ConstValue::String(path) => assert_eq!(path, "blueberry/devices/status"),
+                other => panic!("expected string path, found {:?}", other),
+            }
+        }
+        AnnotationParam::Positional(value) => {
+            panic!("unexpected positional param {:?}", value);
+        }
+    }
+
+    match &message.annotations[1].params[0] {
+        AnnotationParam::Named { name, value } => {
+            assert_eq!(name, "value");
+            let literal = expect_integer(value, 0x47);
+            assert_eq!(literal.base, IntegerBase::Hexadecimal);
+        }
+        AnnotationParam::Positional(value) => {
+            panic!("unexpected positional param {:?}", value);
+        }
+    }
+
+    let members = &message.node.members;
+    assert_eq!(members.len(), 2);
+
+    let id_member = &members[0];
+    assert_eq!(id_member.node.name, "id");
+    assert!(matches!(id_member.node.type_, Type::Long));
+
+    let active_member = &members[1];
+    assert_eq!(active_member.node.name, "active");
+    assert!(matches!(active_member.node.type_, Type::Boolean));
+}
+
+#[test]
+fn parses_message_with_only_topic_annotation() {
+    let src = r#"
+@topic(value = "blueberry/devices/minimal")
+message Minimal {
+    long id;
+};
+"#;
+
+    let defs = parse_idl(src).expect("message with topic annotation should parse");
+    assert_eq!(defs.len(), 1);
+    assert!(matches!(defs[0], Definition::MessageDef(_)));
+}
+
+#[test]
+fn rejects_message_missing_topic_annotation() {
+    let src = r#"
+message Incomplete {
+    long id;
+};
+"#;
+    let err = parse_idl(src).expect_err("message without annotations should fail");
+    assert!(err.contains("@topic"), "unexpected error message: {err}");
+}
+
+#[test]
+fn rejects_message_missing_topic_even_with_other_annotations() {
+    let src = r#"
+@message_key(value = 0x1)
+message Overflowing {
+    long id;
+};
+"#;
+    let err = parse_idl(src).expect_err("message without @topic should fail");
+    assert!(err.contains("@topic"), "unexpected error message: {err}");
+}
+
+#[test]
 fn parses_example_idl_end_to_end() {
     let defs = parse_example();
     assert_eq!(
