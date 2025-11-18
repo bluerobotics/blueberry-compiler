@@ -1,15 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
-/**
- * Parse and reserialize the given IDL, returning a JS object with both results.
- */
-export function analyze_idl_wasm(input: string): any;
 export function wasm_start(): void;
 /**
  * Parse the given IDL source and return either the formatted AST
  * or the parse error description.
  */
 export function parse_idl_wasm(input: string): string;
+/**
+ * Parse and reserialize the given IDL, returning a JS object with both results.
+ */
+export function analyze_idl_wasm(input: string): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 

@@ -1,14 +1,14 @@
 {
-  "name": "rust-lalrpop-experiment",
+  "name": "blueberry-wasm",
   "type": "module",
   "version": "0.1.0",
   "files": [
-    "rust_lalrpop_experiment_bg.wasm",
-    "rust_lalrpop_experiment.js",
-    "rust_lalrpop_experiment.d.ts"
+    "blueberry_wasm_bg.wasm",
+    "blueberry_wasm.js",
+    "blueberry_wasm.d.ts"
   ],
-  "main": "rust_lalrpop_experiment.js",
-  "types": "rust_lalrpop_experiment.d.ts",
+  "main": "blueberry_wasm.js",
+  "types": "blueberry_wasm.d.ts",
   "sideEffects": [
     "./snippets/*"
   ]

@@ -172,17 +172,6 @@ function handleError(f, args) {
         wasm.__wbindgen_exn_store(idx);
     }
 }
-/**
- * Parse and reserialize the given IDL, returning a JS object with both results.
- * @param {string} input
- * @returns {any}
- */
-export function analyze_idl_wasm(input) {
-    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.analyze_idl_wasm(ptr0, len0);
-    return ret;
-}
 
 export function wasm_start() {
     wasm.wasm_start();
@@ -207,6 +196,18 @@ export function parse_idl_wasm(input) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
+}
+
+/**
+ * Parse and reserialize the given IDL, returning a JS object with both results.
+ * @param {string} input
+ * @returns {any}
+ */
+export function analyze_idl_wasm(input) {
+    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.analyze_idl_wasm(ptr0, len0);
+    return ret;
 }
 
 const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
@@ -353,7 +354,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (typeof module_or_path === 'undefined') {
-        module_or_path = new URL('rust_lalrpop_experiment_bg.wasm', import.meta.url);
+        module_or_path = new URL('blueberry_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
