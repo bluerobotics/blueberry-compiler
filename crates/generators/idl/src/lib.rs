@@ -96,14 +96,10 @@ impl IdlGenerator {
             quote!(enum #name)
         };
         self.write_tokens_with_suffix(indent, header, " {");
-        for (idx, member) in enum_def.node.enumerators.iter().enumerate() {
+        for member in &enum_def.node.enumerators {
             self.emit_comments(&member.comments, indent + 1);
             let member_name = ident(&member.name);
-            let suffix = if idx + 1 < enum_def.node.enumerators.len() {
-                ","
-            } else {
-                ""
-            };
+            let suffix = ",";
             if let Some(value) = &member.value {
                 let value_fragment = render_const_value_fragment(value);
                 let line = format_assignment(quote!(#member_name =), &value_fragment);
@@ -683,6 +679,17 @@ mod tests {
             "written AST should match source definitions"
         );
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn enums_emit_trailing_commas() {
+        let defs = load_fixture("enum_only.idl");
+        let emitted = generate_idl(&defs);
+        assert!(
+            emitted.contains("    PENDING = 2,\n};"),
+            "expected generated enum to include trailing comma:\n{}",
+            emitted
+        );
     }
 
     fn load_fixture(name: &str) -> Vec<Definition> {
