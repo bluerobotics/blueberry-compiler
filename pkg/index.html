@@ -69,6 +69,13 @@
         .CodeMirror.error {
             box-shadow: 0 0 0 1px #ff7b72 inset;
         }
+        .CodeMirror .cm-parse-error {
+            background: rgba(255, 123, 114, 0.25);
+            border-bottom: 1px solid #ff7b72;
+        }
+        .CodeMirror .cm-line-parse-error {
+            background: rgba(255, 123, 114, 0.1);
+        }
         .CodeMirror-scroll {
             min-height: 100%;
         }
@@ -139,17 +146,83 @@
         const parserOutputEl = document.getElementById("parser-output");
         const generatedTextarea = document.getElementById("generated-output");
         let generatedEditor;
+        let inputEditor;
+        let currentErrorMarker = null;
+        let currentErrorLine = null;
+
+        function clearEditorErrorHighlight() {
+            if (currentErrorMarker) {
+                currentErrorMarker.clear();
+                currentErrorMarker = null;
+            }
+            if (currentErrorLine && inputEditor) {
+                inputEditor.removeLineClass(currentErrorLine, "background", "cm-line-parse-error");
+                currentErrorLine = null;
+            }
+        }
+
+        function extractErrorOffsets(errorMessage) {
+            if (typeof errorMessage !== "string") {
+                return null;
+            }
+            const tokenMatch = errorMessage.match(/token:\s*\((\d+),\s*Token\([^)]+\),\s*(\d+)\)/);
+            if (tokenMatch) {
+                return {
+                    start: Number(tokenMatch[1]),
+                    end: Number(tokenMatch[2]),
+                };
+            }
+            const locationMatch = errorMessage.match(/location:\s*(?:Some\()?(\d+)/);
+            if (locationMatch) {
+                const start = Number(locationMatch[1]);
+                return {
+                    start,
+                    end: start + 1,
+                };
+            }
+            return null;
+        }
+
+        function highlightParseError(errorMessage) {
+            if (!inputEditor) {
+                return;
+            }
+            clearEditorErrorHighlight();
+            const offsets = extractErrorOffsets(errorMessage);
+            if (!offsets) {
+                return;
+            }
+            const doc = inputEditor.getDoc();
+            const textLength = doc.getValue().length;
+            const startIndex = Math.max(0, Math.min(offsets.start, textLength));
+            const endIndexRaw = Number.isFinite(offsets.end) ? offsets.end : offsets.start + 1;
+            const endIndexCandidate = Math.max(startIndex, Math.min(endIndexRaw, textLength));
+            const endIndex = startIndex === endIndexCandidate ? Math.min(startIndex + 1, textLength) : endIndexCandidate;
+            const from = doc.posFromIndex(startIndex);
+            const to = doc.posFromIndex(endIndex);
+            currentErrorMarker = doc.markText(from, to, { className: "cm-parse-error" });
+            currentErrorLine = inputEditor.addLineClass(from.line, "background", "cm-line-parse-error");
+            inputEditor.scrollIntoView({ from, to }, 100);
+        }
 
         function renderResult(text) {
+            clearEditorErrorHighlight();
             try {
                 const result = analyze_idl_wasm(text);
-                const hasError = Boolean(result.error);
+                const errorMessage = typeof result.error === "string" ? result.error : null;
+                const hasError = Boolean(errorMessage);
                 parserOutputEl.textContent = result.ast ?? "";
                 if (generatedEditor) {
                     generatedEditor.setValue(result.generated ?? "");
                     generatedEditor.getWrapperElement().classList.toggle("error", hasError);
                 }
                 parserOutputEl.classList.toggle("error", hasError);
+                if (inputEditor) {
+                    inputEditor.getWrapperElement().classList.toggle("error", hasError);
+                }
+                if (hasError) {
+                    highlightParseError(errorMessage);
+                }
             } catch (err) {
                 parserOutputEl.textContent = `Runtime error: ${err}`;
                 parserOutputEl.classList.add("error");
@@ -157,13 +230,16 @@
                     generatedEditor.setValue(`Runtime error: ${err}`);
                     generatedEditor.getWrapperElement().classList.add("error");
                 }
+                if (inputEditor) {
+                    inputEditor.getWrapperElement().classList.add("error");
+                }
             }
         }
 
         async function bootstrap() {
             await init();
 
-            const editor = CodeMirror.fromTextArea(textarea, {
+            inputEditor = CodeMirror.fromTextArea(textarea, {
                 mode: "text/x-csrc",
                 theme: "darcula",
                 lineNumbers: true,
@@ -182,16 +258,16 @@
             });
 
             requestAnimationFrame(() => {
-                editor.refresh();
+                inputEditor.refresh();
                 generatedEditor.refresh();
             });
 
             const sample = `module Example {\n    typedef long MyLong;\n\n    enum Status {\n        ACTIVE,\n        INACTIVE,\n        PENDING\n    };\n};`;
 
-            editor.setValue(sample);
+            inputEditor.setValue(sample);
             renderResult(sample);
 
-            editor.on("change", (instance) => {
+            inputEditor.on("change", (instance) => {
                 const value = instance.getValue();
                 renderResult(value);
             });
