@@ -61,6 +61,7 @@ pub enum Definition {
     TypeDef(Commented<TypeDef>),
     EnumDef(Commented<EnumDef>),
     StructDef(Commented<StructDef>),
+    MessageDef(Commented<MessageDef>),
     ModuleDef(Commented<ModuleDef>),
     ConstDef(Commented<ConstDef>),
     ImportDef(Commented<ImportDef>),
@@ -94,6 +95,12 @@ pub struct EnumMember {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDef {
+    pub name: String,
+    pub members: Vec<Commented<Member>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageDef {
     pub name: String,
     pub members: Vec<Commented<Member>>,
 }

@@ -103,6 +103,9 @@ Definition: Definition = {
     <comments:CommentList> <annotations:AnnotationList> <s:StructDef> => {
         Definition::StructDef(Commented::with_annotations(s, comments, annotations))
     },
+    <comments:CommentList> <annotations:AnnotationList> <m:MessageDef> => {
+        Definition::MessageDef(Commented::with_annotations(m, comments, annotations))
+    },
     <comments:CommentList> <annotations:AnnotationList> <c:ConstDef> => {
         Definition::ConstDef(Commented::with_annotations(c, comments, annotations))
     },
@@ -223,6 +226,13 @@ EnumValue: ConstValue = {
 
 StructDef: StructDef = {
     "struct" <name:Identifier> "{" <members:MemberList> "}" ";" => StructDef {
+        name,
+        members,
+    }
+};
+
+MessageDef: MessageDef = {
+    "message" <name:Identifier> "{" <members:MemberList> "}" ";" => MessageDef {
         name,
         members,
     }

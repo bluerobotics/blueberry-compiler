@@ -248,6 +248,12 @@ impl NumericConstantFolder {
                         self.fold_annotations(&mut member.annotations, scope);
                     }
                 }
+                Definition::MessageDef(message_def) => {
+                    self.fold_annotations(&mut message_def.annotations, scope);
+                    for member in &mut message_def.node.members {
+                        self.fold_annotations(&mut member.annotations, scope);
+                    }
+                }
                 Definition::ConstDef(const_def) => {
                     self.fold_annotations(&mut const_def.annotations, scope);
                     let mut path = scope.clone();
