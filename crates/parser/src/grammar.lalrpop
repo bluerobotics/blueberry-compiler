@@ -16,7 +16,12 @@ Comment: String = {
         let raw = <>;
         let without_start = raw.trim_start_matches("/*");
         let without_end = without_start.trim_end_matches("*/");
-        without_end.trim().to_string()
+        without_end
+            .trim()
+            .lines()
+            .map(|line| line.trim_start())
+            .collect::<Vec<_>>()
+            .join("\n")
     },
 };
 
