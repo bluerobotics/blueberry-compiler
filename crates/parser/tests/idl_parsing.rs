@@ -741,3 +741,58 @@ fn parses_example_idl_end_to_end() {
         "integration file should include the Person struct"
     );
 }
+
+#[test]
+fn parses_scoped_module_names() {
+    let defs = parse_fixture("scoped_modules.idl");
+    assert_eq!(defs.len(), 1, "should parse one top-level module");
+
+    // Verify the structure: module A { module B { module C { ... } } }
+    let module_a = match &defs[0] {
+        Definition::ModuleDef(module) => &module.node,
+        other => panic!("expected module definition, found {:?}", other),
+    };
+    assert_eq!(module_a.name, "A", "outermost module should be named A");
+    assert_eq!(
+        module_a.definitions.len(),
+        1,
+        "module A should contain one definition"
+    );
+
+    let module_b = match &module_a.definitions[0] {
+        Definition::ModuleDef(module) => &module.node,
+        other => panic!("expected module definition in A, found {:?}", other),
+    };
+    assert_eq!(module_b.name, "B", "middle module should be named B");
+    assert_eq!(
+        module_b.definitions.len(),
+        1,
+        "module B should contain one definition"
+    );
+
+    let module_c = match &module_b.definitions[0] {
+        Definition::ModuleDef(module) => &module.node,
+        other => panic!("expected module definition in B, found {:?}", other),
+    };
+    assert_eq!(module_c.name, "C", "innermost module should be named C");
+    assert_eq!(
+        module_c.definitions.len(),
+        2,
+        "module C should contain two definitions"
+    );
+
+    // Verify the inner definitions
+    match &module_c.definitions[0] {
+        Definition::TypeDef(typedef) => {
+            assert_eq!(typedef.node.name, "MyLong");
+        }
+        other => panic!("expected typedef, found {:?}", other),
+    }
+
+    match &module_c.definitions[1] {
+        Definition::EnumDef(enum_def) => {
+            assert_eq!(enum_def.node.name, "Status");
+        }
+        other => panic!("expected enum, found {:?}", other),
+    }
+}
