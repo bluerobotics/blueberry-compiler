@@ -1,0 +1,113 @@
+/**
+ * Blueberry full dictionary example that uses every documented feature.
+ */
+// Demonstrates combined block and line comments.
+
+const uint16 BLUEBERRY_NAMESPACE = 0x4242;
+const uint16 DIAGNOSTICS_NAMESPACE = 0x4343;
+const uint32 FIRMWARE_SIGNATURE = 0x42FF00AA;
+const uint8 FEATURE_MASK = 0b10100101;
+const string PROTOCOL_NAME = "Blueberry";
+const boolean ENABLE_JSON_STREAM = TRUE;
+
+@file_path("/dictionary/blueberry/full")
+@module_key(BLUEBERRY_NAMESPACE)
+module Blueberry {
+    typedef uint32 NodeId;
+    typedef string<32> DeviceAlias;
+    typedef float Vec3[3];
+    typedef float Matrix3x3[3][3];
+    typedef uint8 SerialNumber[12];
+    typedef sequence<uint8, 128> ByteLog;
+    typedef sequence<Vec3, 16> Path;
+    typedef sequence<float, 9> CovarianceMatrix;
+
+    enum HwType : uint16 {
+        HW_UNKNOWN = 0,
+        HW_ESC = 1,
+        HW_LUMEN = 2,
+        HW_BRIDGE = 3,
+        HW_SENSOR_HUB
+    };
+
+    enum MessagePriority : uint8 {
+        PRIORITY_LOW = 0,
+        PRIORITY_MEDIUM,
+        PRIORITY_HIGH = 10,
+        PRIORITY_CRITICAL
+    };
+
+    struct FirmwareVersion {
+        uint16 major;
+        uint16 minor;
+        uint32 build;
+        string<16> codename;
+    };
+
+    struct Calibration {
+        Vec3 bias;
+        Matrix3x3 transform;
+        CovarianceMatrix covariance;
+    };
+
+    struct ImuSample {
+        int32 timestamp_us;
+        Vec3 accel;
+        Vec3 gyro;
+        Vec3 mag;
+        CovarianceMatrix covariance;
+    };
+
+    // Message metadata included via annotations and inheritance.
+    @topic(value = "blueberry/devices/{device_type}/{nid}/version")
+    @message_key(value = 0x0100)
+    message VersionMessage {
+        NodeId node;
+        HwType hardware;
+        FirmwareVersion firmware;
+        DeviceAlias label;
+        SerialNumber serial;
+        boolean betaOptIn;
+    };
+
+    @serialization(CDR)
+    @topic(value = "blueberry/devices/{device_type}/{nid}/imu")
+    @message_key(value = 0x0101)
+    message ImuStream {
+        MessagePriority priority;
+        Calibration calibration;
+        sequence<ImuSample, 32> samples;
+        Path plannedPath;
+        string operatorName;
+    };
+
+    @topic(value = "blueberry/devices/{device_type}/{nid}/health")
+    @message_key(value = 0x0102)
+    message DeviceHealth : VersionMessage {
+        uint8 warningCount;
+        ByteLog latestLog;
+        boolean requiresMaintenance;
+    };
+};
+
+import Blueberry;
+
+@file_path("/dictionary/blueberry/diagnostics")
+@module_key(DIAGNOSTICS_NAMESPACE)
+module Diagnostics {
+    struct ModuleHealth {
+        uint32 uptimeSeconds;
+        HwType hardware;
+        boolean requiresMaintenance;
+        Vec3 orientation;
+        ByteLog logSlice;
+    };
+
+    @topic(value = "blueberry/diagnostics/{nid}/health")
+    @message_key(value = 0x0200)
+    message HealthReport {
+        ModuleHealth heath;
+        sequence<MessagePriority, 4> outstanding;
+        string<64> note;
+    };
+};
