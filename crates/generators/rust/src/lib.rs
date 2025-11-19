@@ -1,0 +1,891 @@
+use blueberry_ast::{
+    Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef, ModuleDef, StructDef, Type,
+    TypeDef,
+};
+use proc_macro2::{Literal, TokenStream};
+use quote::{format_ident, quote};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    path::Path,
+};
+
+/// Generate Rust code for the provided IDL definitions.
+pub fn generate_rust(definitions: &[Definition]) -> String {
+    let generator = RustGenerator::new(definitions);
+    let tokens = generator.generate(definitions);
+    let file: syn::File = syn::parse2(tokens).expect("generated Rust should be valid");
+    prettyplease::unparse(&file)
+}
+
+/// Write the generated Rust module to disk.
+pub fn write_rust_file<P: AsRef<Path>>(definitions: &[Definition], path: P) -> io::Result<()> {
+    let contents = generate_rust(definitions);
+    if let Some(parent) = path.as_ref().parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)
+}
+
+struct RustGenerator {
+    registry: TypeRegistry,
+}
+
+impl RustGenerator {
+    fn new(definitions: &[Definition]) -> Self {
+        Self {
+            registry: TypeRegistry::new(definitions),
+        }
+    }
+
+    fn generate(&self, definitions: &[Definition]) -> TokenStream {
+        let runtime = self.runtime_module();
+        let defs = self.emit_definitions(definitions, &[]);
+        quote! {
+            pub mod blueberry_generated {
+                #runtime
+                #(#defs)*
+            }
+        }
+    }
+
+    fn runtime_module(&self) -> TokenStream {
+        let numeric_helpers: Vec<TokenStream> = [
+            ("i16", quote!(write_i16), quote!(read_i16)),
+            ("u16", quote!(write_u16), quote!(read_u16)),
+            ("i32", quote!(write_i32), quote!(read_i32)),
+            ("u32", quote!(write_u32), quote!(read_u32)),
+            ("i64", quote!(write_i64), quote!(read_i64)),
+            ("u64", quote!(write_u64), quote!(read_u64)),
+            ("f32", quote!(write_f32), quote!(read_f32)),
+            ("f64", quote!(write_f64), quote!(read_f64)),
+        ]
+        .into_iter()
+        .map(|(ty, write_fn, read_fn)| {
+            let ty_ident = syn::Ident::new(ty, proc_macro2::Span::call_site());
+            quote! {
+                pub fn #write_fn(buf: &mut Vec<u8>, value: #ty_ident) {
+                    buf.extend_from_slice(&value.to_le_bytes());
+                }
+
+                pub fn #read_fn(cursor: &mut std::io::Cursor<&[u8]>) -> Result<#ty_ident, Error> {
+                    let mut data = [0u8; std::mem::size_of::<#ty_ident>()];
+                    cursor
+                        .read_exact(&mut data)
+                        .map_err(|_| Error::UnexpectedEof)?;
+                    Ok(#ty_ident::from_le_bytes(data))
+                }
+            }
+        })
+        .collect();
+
+        quote! {
+            pub mod runtime {
+                use std::io::{Cursor, Read};
+
+                #[derive(Debug)]
+                pub enum Error {
+                    UnexpectedEof,
+                    InvalidUtf8,
+                    StringTooLong { limit: usize, actual: usize },
+                    SequenceTooLong { limit: usize, actual: usize },
+                    InvalidEnum { name: &'static str, value: i64 },
+                }
+
+                pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
+                    buf.push(if value { 1 } else { 0 });
+                }
+
+                pub fn read_bool(
+                    cursor: &mut Cursor<&[u8]>,
+                ) -> Result<bool, Error> {
+                    let mut byte = [0u8; 1];
+                    cursor
+                        .read_exact(&mut byte)
+                        .map_err(|_| Error::UnexpectedEof)?;
+                    Ok(byte[0] != 0)
+                }
+
+                pub fn write_u8(buf: &mut Vec<u8>, value: u8) {
+                    buf.push(value);
+                }
+
+                pub fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, Error> {
+                    let mut byte = [0u8; 1];
+                    cursor
+                        .read_exact(&mut byte)
+                        .map_err(|_| Error::UnexpectedEof)?;
+                    Ok(byte[0])
+                }
+
+                #(#numeric_helpers)*
+
+                pub fn write_string(
+                    buf: &mut Vec<u8>,
+                    value: &str,
+                    bound: Option<usize>,
+                ) -> Result<(), Error> {
+                    if let Some(limit) = bound {
+                        if value.len() > limit {
+                            return Err(Error::StringTooLong {
+                                limit,
+                                actual: value.len(),
+                            });
+                        }
+                    }
+                    write_u32(buf, value.len() as u32);
+                    buf.extend_from_slice(value.as_bytes());
+                    Ok(())
+                }
+
+                pub fn read_string(
+                    cursor: &mut std::io::Cursor<&[u8]>,
+                    bound: Option<usize>,
+                ) -> Result<String, Error> {
+                    let len = read_u32(cursor)? as usize;
+                    if let Some(limit) = bound {
+                        if len > limit {
+                            return Err(Error::StringTooLong {
+                                limit,
+                                actual: len,
+                            });
+                        }
+                    }
+                    let mut data = vec![0u8; len];
+                    cursor
+                        .read_exact(&mut data)
+                        .map_err(|_| Error::UnexpectedEof)?;
+                    String::from_utf8(data).map_err(|_| Error::InvalidUtf8)
+                }
+
+                pub fn write_vec<T, F>(
+                    buf: &mut Vec<u8>,
+                    values: &[T],
+                    bound: Option<usize>,
+                    mut serializer: F,
+                ) -> Result<(), Error>
+                where
+                    F: FnMut(&T, &mut Vec<u8>) -> Result<(), Error>,
+                {
+                    if let Some(limit) = bound {
+                        if values.len() > limit {
+                            return Err(Error::SequenceTooLong {
+                                limit,
+                                actual: values.len(),
+                            });
+                        }
+                    }
+                    write_u32(buf, values.len() as u32);
+                    for value in values {
+                        serializer(value, buf)?;
+                    }
+                    Ok(())
+                }
+
+                pub fn read_vec<T, F>(
+                    cursor: &mut std::io::Cursor<&[u8]>,
+                    bound: Option<usize>,
+                    mut parser: F,
+                ) -> Result<Vec<T>, Error>
+                where
+                    F: FnMut(&mut std::io::Cursor<&[u8]>) -> Result<T, Error>,
+                {
+                    let len = read_u32(cursor)? as usize;
+                    if let Some(limit) = bound {
+                        if len > limit {
+                            return Err(Error::SequenceTooLong {
+                                limit,
+                                actual: len,
+                            });
+                        }
+                    }
+                    let mut items = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        items.push(parser(cursor)?);
+                    }
+                    Ok(items)
+                }
+            }
+        }
+    }
+
+    fn emit_definitions(&self, defs: &[Definition], scope: &[String]) -> Vec<TokenStream> {
+        defs.iter()
+            .map(|def| match def {
+                Definition::ModuleDef(module) => self.emit_module(module, scope),
+                Definition::TypeDef(typedef) => self.emit_typedef(typedef, scope),
+                Definition::EnumDef(enum_def) => self.emit_enum(enum_def, scope),
+                Definition::StructDef(struct_def) => self.emit_struct(struct_def, scope),
+                Definition::MessageDef(message_def) => self.emit_message(message_def, scope),
+                Definition::ConstDef(const_def) => self.emit_const(const_def, scope),
+                Definition::ImportDef(_) => quote! {},
+            })
+            .collect()
+    }
+
+    fn emit_module(&self, module: &Commented<ModuleDef>, scope: &[String]) -> TokenStream {
+        let ident = format_ident!("{}", module.node.name);
+        let mut new_scope = scope.to_vec();
+        new_scope.push(module.node.name.clone());
+        let defs = self.emit_definitions(&module.node.definitions, &new_scope);
+        let runtime_path = quote!(crate::blueberry_generated::runtime);
+        quote! {
+            pub mod #ident {
+                use #runtime_path;
+                #(#defs)*
+            }
+        }
+    }
+
+    fn emit_typedef(&self, typedef: &Commented<TypeDef>, scope: &[String]) -> TokenStream {
+        let name = format_ident!("{}", typedef.node.name);
+        let resolved = self.registry.resolve_type(&typedef.node.base_type, scope);
+        let ty = self.render_type(&resolved, scope);
+        quote! {
+            pub type #name = #ty;
+        }
+    }
+
+    fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> TokenStream {
+        let ident = format_ident!("{}", enum_def.node.name);
+        let repr_ty = enum_def
+            .node
+            .base_type
+            .as_ref()
+            .map(|t| self.render_type(t, scope))
+            .unwrap_or_else(|| quote!(u32));
+        let variants = enum_def.node.enumerators.iter().map(|member| {
+            let name = format_ident!("{}", member.name);
+            if let Some(value) = &member.value {
+                let literal = self.render_const(value, scope);
+                quote!(#name = #literal,)
+            } else {
+                quote!(#name,)
+            }
+        });
+        let matches = enum_def.node.enumerators.iter().map(|member| {
+            let name = format_ident!("{}", member.name);
+            let literal = member
+                .value
+                .as_ref()
+                .map(|v| self.render_const(v, scope))
+                .unwrap_or_else(|| quote!(Self::#name as #repr_ty));
+            quote!(#literal => Ok(Self::#name),)
+        });
+        quote! {
+            #[repr(#repr_ty)]
+            #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+            pub enum #ident {
+                #(#variants)*
+            }
+
+            impl #ident {
+                pub fn from_repr(value: #repr_ty) -> Result<Self, runtime::Error> {
+                    match value {
+                        #(#matches)*
+                        _ => Err(runtime::Error::InvalidEnum {
+                            name: stringify!(#ident),
+                            value: value as i64,
+                        }),
+                    }
+                }
+            }
+        }
+    }
+
+    fn emit_struct(&self, struct_def: &Commented<StructDef>, scope: &[String]) -> TokenStream {
+        let ident = format_ident!("{}", struct_def.node.name);
+        let mut path = scope.to_vec();
+        path.push(struct_def.node.name.clone());
+        let members = self.registry.collect_struct_members(&path);
+        self.emit_struct_like(&ident, &members, scope)
+    }
+
+    fn emit_message(&self, message_def: &Commented<MessageDef>, scope: &[String]) -> TokenStream {
+        let ident = format_ident!("{}", message_def.node.name);
+        let mut path = scope.to_vec();
+        path.push(message_def.node.name.clone());
+        let members = self.registry.collect_message_members(&path);
+        self.emit_struct_like(&ident, &members, scope)
+    }
+
+    fn emit_struct_like(
+        &self,
+        ident: &proc_macro2::Ident,
+        members: &[ResolvedMember],
+        scope: &[String],
+    ) -> TokenStream {
+        let fields = members.iter().map(|member| {
+            let name = format_ident!("{}", member.name);
+            let ty = self.render_type(&member.ty, scope);
+            quote!(pub #name: #ty,)
+        });
+
+        let writes = members.iter().map(|member| {
+            let field = format_ident!("{}", member.name);
+            let expr = quote!(&self.#field);
+            self.serialize_value(expr, &member.ty, scope)
+        });
+
+        let reads = members.iter().map(|member| {
+            let field = format_ident!("{}", member.name);
+            let expr = self.deserialize_value(&member.ty, scope);
+            quote! {
+                let #field = #expr?;
+            }
+        });
+
+        let field_names = members.iter().map(|member| {
+            let name = format_ident!("{}", member.name);
+            quote!(#name,)
+        });
+
+        quote! {
+            #[derive(Clone, Debug, PartialEq)]
+            pub struct #ident {
+                #(#fields)*
+            }
+
+            impl #ident {
+                pub fn serialize(&self) -> Result<Vec<u8>, runtime::Error> {
+                    let mut buf = Vec::new();
+                    self.write_into(&mut buf)?;
+                    Ok(buf)
+                }
+
+                pub fn write_into(
+                    &self,
+                    buf: &mut Vec<u8>,
+                ) -> Result<(), runtime::Error> {
+                    #(#writes)*
+                    Ok(())
+                }
+
+                pub fn deserialize(
+                    bytes: &[u8],
+                ) -> Result<Self, runtime::Error> {
+                    let mut cursor = std::io::Cursor::new(bytes);
+                    Self::read_from(&mut cursor)
+                }
+
+                pub fn read_from(
+                    cursor: &mut std::io::Cursor<&[u8]>,
+                ) -> Result<Self, runtime::Error> {
+                    #(#reads)*
+                    Ok(Self {
+                        #(#field_names)*
+                    })
+                }
+            }
+        }
+    }
+
+    fn emit_const(&self, const_def: &Commented<ConstDef>, scope: &[String]) -> TokenStream {
+        let name = format_ident!("{}", const_def.node.name);
+        let ty = self
+            .registry
+            .resolve_type(&const_def.node.const_type, scope);
+        let mut ty_tokens = self.render_type(&ty, scope);
+        let value = self.render_const(&const_def.node.value, scope);
+        if matches!(ty, Type::String { .. }) {
+            ty_tokens = quote!(&'static str);
+        }
+        quote! {
+            pub const #name: #ty_tokens = #value;
+        }
+    }
+
+    fn serialize_value(&self, expr: TokenStream, ty: &Type, scope: &[String]) -> TokenStream {
+        match ty {
+            Type::Long => quote!(runtime::write_i32(buf, *#expr);),
+            Type::Short => quote!(runtime::write_i16(buf, *#expr);),
+            Type::UnsignedShort => quote!(runtime::write_u16(buf, *#expr);),
+            Type::UnsignedLong => quote!(runtime::write_u32(buf, *#expr);),
+            Type::LongLong => quote!(runtime::write_i64(buf, *#expr);),
+            Type::UnsignedLongLong => quote!(runtime::write_u64(buf, *#expr);),
+            Type::Float => quote!(runtime::write_f32(buf, *#expr);),
+            Type::Double => quote!(runtime::write_f64(buf, *#expr);),
+            Type::Boolean => quote!(runtime::write_bool(buf, *#expr);),
+            Type::Octet => quote!(buf.push(*#expr);),
+            Type::String { bound } => {
+                let limit = self.bound_tokens(*bound);
+                quote!(runtime::write_string(buf, #expr, #limit)?;)
+            }
+            Type::Sequence { element_type, size } => {
+                let limit = self.bound_tokens(*size);
+                let inner = self.serialize_value(quote!(value), element_type, scope);
+                let element_ty = self.render_type(element_type, scope);
+                quote! {
+                    runtime::write_vec(
+                        buf,
+                        #expr,
+                        #limit,
+                        |value: &#element_ty, buf| {
+                            #inner
+                            Ok(())
+                        },
+                    )?;
+                }
+            }
+            Type::ScopedName(path) => {
+                if let Some(base_type) = self.registry.enum_repr(path) {
+                    let writer = self.writer_fn(base_type);
+                    quote!(runtime::#writer(buf, *#expr as _);)
+                } else {
+                    quote!(#expr.write_into(buf)?;)
+                }
+            }
+            _ => quote! {
+                compile_error!("unsupported type for serialization in rust generator");
+            },
+        }
+    }
+
+    fn deserialize_value(&self, ty: &Type, scope: &[String]) -> TokenStream {
+        match ty {
+            Type::Long => quote!(runtime::read_i32(cursor)),
+            Type::Short => quote!(runtime::read_i16(cursor)),
+            Type::UnsignedShort => quote!(runtime::read_u16(cursor)),
+            Type::UnsignedLong => quote!(runtime::read_u32(cursor)),
+            Type::LongLong => quote!(runtime::read_i64(cursor)),
+            Type::UnsignedLongLong => quote!(runtime::read_u64(cursor)),
+            Type::Float => quote!(runtime::read_f32(cursor)),
+            Type::Double => quote!(runtime::read_f64(cursor)),
+            Type::Boolean => quote!(runtime::read_bool(cursor)),
+            Type::Octet => quote!(runtime::read_u8(cursor)),
+            Type::String { bound } => {
+                let limit = self.bound_tokens(*bound);
+                quote!(runtime::read_string(cursor, #limit))
+            }
+            Type::Sequence { element_type, size } => {
+                let limit = self.bound_tokens(*size);
+                let inner = self.deserialize_value(element_type, scope);
+                quote! {
+                    runtime::read_vec(cursor, #limit, |cursor| #inner)
+                }
+            }
+            Type::ScopedName(path) => {
+                if let Some(base_type) = self.registry.enum_repr(path) {
+                    let reader = self.reader_fn(base_type);
+                    let enum_path = self.relative_path(path, scope);
+                    quote! {{
+                        let raw = runtime::#reader(cursor)?;
+                        #enum_path::from_repr(raw)
+                    }}
+                } else {
+                    let path_tokens = self.relative_path(path, scope);
+                    quote!(#path_tokens::read_from(cursor))
+                }
+            }
+            _ => quote! {
+                compile_error!("unsupported type for deserialization in rust generator");
+            },
+        }
+    }
+
+    fn render_type(&self, ty: &Type, scope: &[String]) -> TokenStream {
+        match ty {
+            Type::Long => quote!(i32),
+            Type::Short => quote!(i16),
+            Type::UnsignedShort => quote!(u16),
+            Type::UnsignedLong => quote!(u32),
+            Type::LongLong => quote!(i64),
+            Type::UnsignedLongLong => quote!(u64),
+            Type::Float => quote!(f32),
+            Type::Double => quote!(f64),
+            Type::Boolean => quote!(bool),
+            Type::Octet => quote!(u8),
+            Type::String { .. } => quote!(String),
+            Type::Sequence { element_type, .. } => {
+                let inner = self.render_type(element_type, scope);
+                quote!(Vec<#inner>)
+            }
+            Type::ScopedName(path) => self.relative_path(path, scope),
+            _ => quote!(String),
+        }
+    }
+
+    fn render_const(&self, value: &ConstValue, scope: &[String]) -> TokenStream {
+        match value {
+            ConstValue::Integer(lit) => {
+                let literal = Literal::i64_unsuffixed(lit.value);
+                quote!(#literal)
+            }
+            ConstValue::Float(f) => {
+                let literal = Literal::f64_unsuffixed(*f);
+                quote!(#literal)
+            }
+            ConstValue::Fixed(fixed) => {
+                let literal = Literal::f64_unsuffixed(fixed.to_f64());
+                quote!(#literal)
+            }
+            ConstValue::Binary(binary) => {
+                let literal = Literal::i64_unsuffixed(binary.to_i64());
+                quote!(#literal)
+            }
+            ConstValue::String(text) => {
+                let literal = Literal::string(text);
+                quote!(#literal)
+            }
+            ConstValue::Boolean(true) => quote!(true),
+            ConstValue::Boolean(false) => quote!(false),
+            ConstValue::Char(ch) => {
+                let literal = Literal::character(*ch);
+                quote!(#literal)
+            }
+            ConstValue::ScopedName(path) => self.relative_path(path, scope),
+            ConstValue::UnaryOp { op, expr } => {
+                let inner = self.render_const(expr, scope);
+                let op_token = match op {
+                    blueberry_ast::UnaryOperator::Plus => quote!(+),
+                    blueberry_ast::UnaryOperator::Minus => quote!(-),
+                };
+                quote!((#op_token #inner))
+            }
+            ConstValue::BinaryOp { op, left, right } => {
+                let lhs = self.render_const(left, scope);
+                let rhs = self.render_const(right, scope);
+                let op_token = match op {
+                    blueberry_ast::BinaryOperator::Add => quote!(+),
+                    blueberry_ast::BinaryOperator::Subtract => quote!(-),
+                    blueberry_ast::BinaryOperator::Multiply => quote!(*),
+                    blueberry_ast::BinaryOperator::Divide => quote!(/),
+                };
+                quote!((#lhs #op_token #rhs))
+            }
+        }
+    }
+
+    fn bound_tokens(&self, bound: Option<u32>) -> TokenStream {
+        match bound {
+            Some(limit) => {
+                let literal = Literal::u32_unsuffixed(limit);
+                quote!(Some(#literal as usize))
+            }
+            None => quote!(None),
+        }
+    }
+
+    fn writer_fn(&self, ty: &Type) -> TokenStream {
+        match ty {
+            Type::Short => quote!(write_i16),
+            Type::UnsignedShort => quote!(write_u16),
+            Type::Long => quote!(write_i32),
+            Type::UnsignedLong => quote!(write_u32),
+            Type::LongLong => quote!(write_i64),
+            Type::UnsignedLongLong => quote!(write_u64),
+            Type::Octet => quote!(write_u8),
+            _ => quote!(write_u32),
+        }
+    }
+
+    fn reader_fn(&self, ty: &Type) -> TokenStream {
+        match ty {
+            Type::Short => quote!(read_i16),
+            Type::UnsignedShort => quote!(read_u16),
+            Type::Long => quote!(read_i32),
+            Type::UnsignedLong => quote!(read_u32),
+            Type::LongLong => quote!(read_i64),
+            Type::UnsignedLongLong => quote!(read_u64),
+            Type::Octet => quote!(read_u8),
+            _ => quote!(read_u32),
+        }
+    }
+
+    fn relative_path(&self, target: &[String], _scope: &[String]) -> TokenStream {
+        target
+            .iter()
+            .fold(quote!(crate::blueberry_generated), |acc, segment| {
+                let ident = format_ident!("{}", segment);
+                quote!(#acc::#ident)
+            })
+    }
+}
+
+#[derive(Clone)]
+struct ResolvedMember {
+    name: String,
+    ty: Type,
+}
+
+#[derive(Clone)]
+struct TypedefInfo {
+    ty: Type,
+    scope: Vec<String>,
+}
+
+#[derive(Clone)]
+struct StructInfo {
+    def: StructDef,
+    scope: Vec<String>,
+}
+
+#[derive(Clone)]
+struct MessageInfo {
+    def: MessageDef,
+    scope: Vec<String>,
+}
+
+#[derive(Default)]
+struct TypeRegistry {
+    typedefs: HashMap<Vec<String>, TypedefInfo>,
+    structs: HashMap<Vec<String>, StructInfo>,
+    messages: HashMap<Vec<String>, MessageInfo>,
+    enums: HashMap<Vec<String>, Option<Type>>,
+}
+
+impl TypeRegistry {
+    fn new(definitions: &[Definition]) -> Self {
+        let mut registry = TypeRegistry::default();
+        let mut scope = Vec::new();
+        registry.collect(definitions, &mut scope);
+        registry
+    }
+
+    fn collect(&mut self, defs: &[Definition], scope: &mut Vec<String>) {
+        for def in defs {
+            match def {
+                Definition::ModuleDef(module) => {
+                    scope.push(module.node.name.clone());
+                    self.collect(&module.node.definitions, scope);
+                    scope.pop();
+                }
+                Definition::TypeDef(typedef) => {
+                    let mut path = scope.clone();
+                    path.push(typedef.node.name.clone());
+                    self.typedefs.insert(
+                        path,
+                        TypedefInfo {
+                            ty: typedef.node.base_type.clone(),
+                            scope: scope.clone(),
+                        },
+                    );
+                }
+                Definition::StructDef(struct_def) => {
+                    let mut path = scope.clone();
+                    path.push(struct_def.node.name.clone());
+                    self.structs.insert(
+                        path,
+                        StructInfo {
+                            def: struct_def.node.clone(),
+                            scope: scope.clone(),
+                        },
+                    );
+                }
+                Definition::MessageDef(message_def) => {
+                    let mut path = scope.clone();
+                    path.push(message_def.node.name.clone());
+                    self.messages.insert(
+                        path,
+                        MessageInfo {
+                            def: message_def.node.clone(),
+                            scope: scope.clone(),
+                        },
+                    );
+                }
+                Definition::EnumDef(enum_def) => {
+                    let mut path = scope.clone();
+                    path.push(enum_def.node.name.clone());
+                    self.enums.insert(path, enum_def.node.base_type.clone());
+                }
+                Definition::ConstDef(_) | Definition::ImportDef(_) => {}
+            }
+        }
+    }
+
+    fn resolve_type(&self, ty: &Type, scope: &[String]) -> Type {
+        match ty {
+            Type::Sequence { element_type, size } => Type::Sequence {
+                element_type: Box::new(self.resolve_type(element_type, scope)),
+                size: *size,
+            },
+            Type::Array {
+                element_type,
+                dimensions,
+            } => {
+                let mut resolved = self.resolve_type(element_type, scope);
+                for &dim in dimensions.iter().rev() {
+                    resolved = Type::Sequence {
+                        element_type: Box::new(resolved),
+                        size: Some(dim),
+                    };
+                }
+                resolved
+            }
+            Type::ScopedName(name) => {
+                if let [single] = name.as_slice()
+                    && let Some(mapped) = map_builtin_ident(single)
+                {
+                    return mapped;
+                }
+                if let Some(path) = self.resolve_typedef(name, scope) {
+                    let info = self.typedefs.get(&path).expect("typedef info missing");
+                    self.resolve_type(&info.ty, &info.scope)
+                } else if let Some(path) = self.resolve_struct(name, scope) {
+                    Type::ScopedName(path)
+                } else if let Some(path) = self.resolve_message(name, scope) {
+                    Type::ScopedName(path)
+                } else if let Some(path) = self.resolve_enum(name, scope) {
+                    Type::ScopedName(path)
+                } else {
+                    Type::ScopedName(name.clone())
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn collect_struct_members(&self, path: &[String]) -> Vec<ResolvedMember> {
+        let info = self
+            .structs
+            .get(path)
+            .unwrap_or_else(|| panic!("missing struct {:?}", path));
+        let mut members = Vec::new();
+        if let Some(base) = &info.def.base
+            && let Some(base_path) = self.resolve_struct(base, &info.scope)
+        {
+            members.extend(self.collect_struct_members(&base_path));
+        }
+        for member in &info.def.members {
+            let ty = self.resolve_type(&member.node.type_, &info.scope);
+            members.push(ResolvedMember {
+                name: member.node.name.clone(),
+                ty,
+            });
+        }
+        members
+    }
+
+    fn collect_message_members(&self, path: &[String]) -> Vec<ResolvedMember> {
+        let info = self
+            .messages
+            .get(path)
+            .unwrap_or_else(|| panic!("missing message {:?}", path));
+        let mut members = Vec::new();
+        if let Some(base) = &info.def.base
+            && let Some(base_path) = self.resolve_message(base, &info.scope)
+        {
+            members.extend(self.collect_message_members(&base_path));
+        }
+        for member in &info.def.members {
+            let ty = self.resolve_type(&member.node.type_, &info.scope);
+            members.push(ResolvedMember {
+                name: member.node.name.clone(),
+                ty,
+            });
+        }
+        members
+    }
+
+    fn enum_repr(&self, path: &[String]) -> Option<&Type> {
+        self.enums.get(path)?.as_ref()
+    }
+
+    fn resolve_typedef(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
+        self.resolve_path(name, scope, self.typedefs.keys())
+    }
+
+    fn resolve_struct(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
+        self.resolve_path(name, scope, self.structs.keys())
+    }
+
+    fn resolve_message(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
+        self.resolve_path(name, scope, self.messages.keys())
+    }
+
+    fn resolve_enum(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
+        self.resolve_path(name, scope, self.enums.keys())
+    }
+
+    fn resolve_path<'a, I>(
+        &self,
+        name: &[String],
+        scope: &[String],
+        entries: I,
+    ) -> Option<Vec<String>>
+    where
+        I: IntoIterator<Item = &'a Vec<String>>,
+    {
+        let paths: Vec<Vec<String>> = entries.into_iter().cloned().collect();
+        let lookup: HashSet<Vec<String>> = paths.iter().cloned().collect();
+        for prefix in (0..=scope.len()).rev() {
+            let mut candidate = scope[..prefix].to_vec();
+            candidate.extend_from_slice(name);
+            if lookup.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        self.resolve_by_suffix(name, &paths)
+    }
+
+    fn resolve_by_suffix(&self, name: &[String], paths: &[Vec<String>]) -> Option<Vec<String>> {
+        let matches: Vec<&Vec<String>> = paths.iter().filter(|path| path.ends_with(name)).collect();
+        if matches.len() == 1 {
+            return Some(matches[0].clone());
+        }
+        None
+    }
+}
+
+fn map_builtin_ident(name: &str) -> Option<Type> {
+    match name {
+        "int8" | "int16" => Some(Type::Short),
+        "int32" => Some(Type::Long),
+        "int64" => Some(Type::LongLong),
+        "uint8" => Some(Type::Octet),
+        "uint16" => Some(Type::UnsignedShort),
+        "uint32" => Some(Type::UnsignedLong),
+        "uint64" => Some(Type::UnsignedLongLong),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blueberry_parser::parse_idl;
+    use std::{fs, path::PathBuf};
+
+    fn load_fixture(relative: &str) -> Vec<Definition> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.parent())
+            .expect("workspace root directory");
+        let path = workspace_root.join(relative);
+        let contents = fs::read_to_string(path).expect("fixture must exist");
+        parse_idl(&contents).expect("fixture should parse")
+    }
+
+    #[test]
+    fn resolves_scoped_names_across_modules() {
+        let definitions = load_fixture("crates/parser/tests/fixtures/blueberry_full.idl");
+        let registry = TypeRegistry::new(&definitions);
+        let message_path = vec!["Blueberry".to_string(), "VersionMessage".to_string()];
+        let members = registry.collect_message_members(&message_path);
+        let hardware = members
+            .iter()
+            .find(|member| member.name == "hardware")
+            .expect("hardware field should exist");
+        match &hardware.ty {
+            Type::ScopedName(path) => {
+                assert_eq!(path, &["Blueberry".to_string(), "HwType".to_string()])
+            }
+            other => panic!("expected scoped name, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn relative_path_uses_full_module_segments() {
+        let generator = RustGenerator::new(&[]);
+        let path = vec!["Blueberry".to_string(), "HwType".to_string()];
+        let tokens = generator.relative_path(&path, &[]);
+        assert_eq!(
+            tokens.to_string(),
+            "crate :: blueberry_generated :: Blueberry :: HwType"
+        );
+    }
+}
