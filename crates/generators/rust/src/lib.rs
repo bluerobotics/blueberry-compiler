@@ -43,11 +43,61 @@ impl RustGenerator {
     fn generate(&self, definitions: &[Definition]) -> TokenStream {
         let runtime = self.runtime_module();
         let defs = self.emit_definitions(definitions, &[]);
+        let tests = self.emit_tests(definitions);
         quote! {
             pub mod blueberry_generated {
                 #runtime
                 pub use runtime::BinarySerializable;
                 #(#defs)*
+            }
+
+            #tests
+        }
+    }
+
+    fn emit_tests(&self, _definitions: &[Definition]) -> TokenStream {
+        let mut struct_paths: Vec<Vec<String>> = self.registry.structs.keys().cloned().collect();
+        if struct_paths.is_empty() {
+            return TokenStream::new();
+        }
+        struct_paths.sort();
+        let tests = struct_paths.into_iter().map(|path| {
+            let suffix = path
+                .iter()
+                .map(|segment| segment.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("_");
+            let test_name = format_ident!("test_default_{suffix}");
+            let type_ident = format_ident!(
+                "{}",
+                path.last().expect("struct definition must have a name")
+            );
+            let type_path = self.relative_path(&path, &[]);
+            quote! {
+                #[test]
+                fn #test_name() {
+                    use crate::blueberry_generated::runtime::BinarySerializable;
+                    use #type_path;
+
+                    let value = #type_ident::default();
+
+                    let bytes = value.serialize().expect("serialize");
+
+                    let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                    println!("HEX: 0x{}", hex);
+
+                    let decoded = #type_ident::deserialize(&bytes).expect("deserialize");
+
+                    assert_eq!(value, decoded);
+                    println!("{:?}", decoded);
+                }
+            }
+        });
+
+        quote! {
+            #[cfg(test)]
+            mod generated_tests {
+                #(#tests)*
             }
         }
     }
