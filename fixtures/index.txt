@@ -1,0 +1,16 @@
+annotations.idl
+const_folding.idl
+consts.idl
+enum_auto_values.idl
+enum_only.idl
+example.idl
+fixed_literals.idl
+floating_literals.idl
+imports.idl
+inheritance.idl
+integer_literals.idl
+message_basic.idl
+module_only.idl
+scoped_modules.idl
+struct_basic.idl
+typedefs.idl

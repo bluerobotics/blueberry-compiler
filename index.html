@@ -58,6 +58,35 @@
             background: #0d1117;
             min-height: 0;
         }
+        .pane-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #30363d;
+            background: #0d1117;
+            flex-wrap: wrap;
+        }
+        .pane-controls label {
+            font-size: 0.85rem;
+            opacity: 0.8;
+        }
+        .pane-controls select {
+            background: #161b22;
+            color: #f0f6fc;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+            min-width: 180px;
+        }
+        .pane-controls select:disabled {
+            opacity: 0.6;
+        }
+        .fixture-message {
+            font-size: 0.8rem;
+            opacity: 0.75;
+        }
         .CodeMirror {
             flex: 1;
             height: 100%;
@@ -116,6 +145,13 @@
                 <span>CodeMirror highlighting & live parsing</span>
             </header>
             <div class="pane-body">
+                <div class="pane-controls">
+                    <label for="fixture-select">Load fixture:</label>
+                    <select id="fixture-select" disabled>
+                        <option value="">Loading fixtures...</option>
+                    </select>
+                    <span id="fixture-message" class="fixture-message"></span>
+                </div>
                 <textarea id="idl-input" spellcheck="false"></textarea>
             </div>
         </section>
@@ -145,10 +181,13 @@
         const textarea = document.getElementById("idl-input");
         const parserOutputEl = document.getElementById("parser-output");
         const generatedTextarea = document.getElementById("generated-output");
+        const fixtureSelect = document.getElementById("fixture-select");
+        const fixtureMessageEl = document.getElementById("fixture-message");
         let generatedEditor;
         let inputEditor;
         let currentErrorMarker = null;
         let currentErrorLine = null;
+        let isProgrammaticEditorChange = false;
 
         function clearEditorErrorHighlight() {
             if (currentErrorMarker) {
@@ -203,6 +242,109 @@
             currentErrorMarker = doc.markText(from, to, { className: "cm-parse-error" });
             currentErrorLine = inputEditor.addLineClass(from.line, "background", "cm-line-parse-error");
             inputEditor.scrollIntoView({ from, to }, 100);
+        }
+
+        function updateFixtureMessage(message) {
+            if (fixtureMessageEl) {
+                fixtureMessageEl.textContent = message ?? "";
+            }
+        }
+
+        function setFixtureSelectPlaceholder(text, shouldDisable = true) {
+            if (!fixtureSelect) {
+                return;
+            }
+            fixtureSelect.innerHTML = "";
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = text;
+            fixtureSelect.appendChild(option);
+            fixtureSelect.disabled = shouldDisable;
+        }
+
+        function populateFixtureOptions(files) {
+            if (!fixtureSelect) {
+                return;
+            }
+            fixtureSelect.innerHTML = "";
+            const customOption = document.createElement("option");
+            customOption.value = "";
+            customOption.textContent = "Custom input";
+            fixtureSelect.appendChild(customOption);
+            files.forEach((file) => {
+                const option = document.createElement("option");
+                option.value = file;
+                option.textContent = file;
+                fixtureSelect.appendChild(option);
+            });
+            fixtureSelect.disabled = files.length === 0;
+        }
+
+        async function loadFixtureList() {
+            if (!fixtureSelect) {
+                return;
+            }
+            setFixtureSelectPlaceholder("Loading fixtures...");
+            updateFixtureMessage("");
+            try {
+                const response = await fetch("./fixtures/index.txt", { cache: "no-store" });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const manifestText = await response.text();
+                const files = manifestText
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter((line) => line.length > 0)
+                    .sort((a, b) => a.localeCompare(b));
+                populateFixtureOptions(files);
+                if (files.length === 0) {
+                    updateFixtureMessage("No fixtures found");
+                } else {
+                    const label = `Loaded ${files.length} fixture${files.length === 1 ? "" : "s"}`;
+                    updateFixtureMessage(label);
+                }
+            } catch (error) {
+                console.error("Failed to load fixtures list", error);
+                setFixtureSelectPlaceholder("Fixtures unavailable", true);
+                updateFixtureMessage("Fixture list unavailable");
+            }
+        }
+
+        async function loadFixtureFile(fileName) {
+            if (!inputEditor) {
+                return;
+            }
+            try {
+                const encodedName = fileName
+                    .split("/")
+                    .map((segment) => encodeURIComponent(segment))
+                    .join("/");
+                const response = await fetch(`./fixtures/${encodedName}`, { cache: "no-store" });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const content = await response.text();
+                isProgrammaticEditorChange = true;
+                inputEditor.setValue(content);
+                isProgrammaticEditorChange = false;
+                updateFixtureMessage(`Loaded fixture: ${fileName}`);
+                inputEditor.focus();
+            } catch (error) {
+                console.error(`Failed to load fixture "${fileName}"`, error);
+                updateFixtureMessage(`Failed to load fixture: ${fileName}`);
+            }
+        }
+
+        if (fixtureSelect) {
+            fixtureSelect.addEventListener("change", (event) => {
+                const selectedFile = event.target.value;
+                if (!selectedFile) {
+                    updateFixtureMessage("Custom input");
+                    return;
+                }
+                loadFixtureFile(selectedFile);
+            });
         }
 
         function renderResult(text) {
@@ -264,12 +406,24 @@
 
             const sample = `module Example {\n    typedef long MyLong;\n\n    enum Status {\n        ACTIVE,\n        INACTIVE,\n        PENDING\n    };\n};`;
 
+            isProgrammaticEditorChange = true;
             inputEditor.setValue(sample);
+            isProgrammaticEditorChange = false;
             renderResult(sample);
 
             inputEditor.on("change", (instance) => {
                 const value = instance.getValue();
+                if (!isProgrammaticEditorChange) {
+                    if (fixtureSelect) {
+                        fixtureSelect.value = "";
+                    }
+                    updateFixtureMessage("Custom input");
+                }
                 renderResult(value);
+            });
+
+            loadFixtureList().catch((error) => {
+                console.error("Failed to retrieve fixture list", error);
             });
         }
 
