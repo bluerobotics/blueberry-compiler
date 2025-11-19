@@ -1,5 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
+use blueberry_generator_rust::generate_rust;
 use blueberry_idl_generator::generate_idl;
 use blueberry_parser::parse_idl;
 use js_sys::{Object, Reflect};
@@ -22,12 +23,15 @@ pub fn parse_idl_wasm(input: &str) -> String {
 
 /// Parse and reserialize the given IDL, returning a JS object with both results.
 #[wasm_bindgen]
-pub fn analyze_idl_wasm(input: &str) -> JsValue {
+pub fn analyze_idl_wasm(input: &str, mode: &str) -> JsValue {
     let result = Object::new();
     match parse_idl(input) {
         Ok(defs) => {
             let ast = format!("{:#?}", defs);
-            let generated = generate_idl(&defs);
+            let generated = match mode {
+                "rust" => generate_rust(&defs),
+                _ => generate_idl(&defs),
+            };
             Reflect::set(&result, &"ast".into(), &JsValue::from_str(&ast)).unwrap();
             Reflect::set(&result, &"generated".into(), &JsValue::from_str(&generated)).unwrap();
             Reflect::set(&result, &"error".into(), &JsValue::UNDEFINED).unwrap();
@@ -35,7 +39,11 @@ pub fn analyze_idl_wasm(input: &str) -> JsValue {
         Err(err) => {
             let err_str = JsValue::from_str(&err);
             Reflect::set(&result, &"ast".into(), &err_str).unwrap();
-            let generated_msg = format!("Cannot generate IDL:\n{err}");
+            let target = match mode {
+                "rust" => "Rust",
+                _ => "IDL",
+            };
+            let generated_msg = format!("Cannot generate {target}:\n{err}");
             Reflect::set(
                 &result,
                 &"generated".into(),
