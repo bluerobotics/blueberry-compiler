@@ -1,7 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
-export const analyze_idl_wasm: (a: number, b: number) => any;
+export const analyze_idl_wasm: (a: number, b: number, c: number, d: number) => any;
 export const parse_idl_wasm: (a: number, b: number) => [number, number];
 export const wasm_start: () => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;

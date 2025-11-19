@@ -1,21 +1,21 @@
 /* tslint:disable */
 /* eslint-disable */
-export function wasm_start(): void;
+/**
+ * Parse and reserialize the given IDL, returning a JS object with both results.
+ */
+export function analyze_idl_wasm(input: string, mode: string): any;
 /**
  * Parse the given IDL source and return either the formatted AST
  * or the parse error description.
  */
 export function parse_idl_wasm(input: string): string;
-/**
- * Parse and reserialize the given IDL, returning a JS object with both results.
- */
-export function analyze_idl_wasm(input: string): any;
+export function wasm_start(): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly analyze_idl_wasm: (a: number, b: number) => any;
+  readonly analyze_idl_wasm: (a: number, b: number, c: number, d: number) => any;
   readonly parse_idl_wasm: (a: number, b: number) => [number, number];
   readonly wasm_start: () => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;

@@ -83,6 +83,28 @@
         .pane-controls select:disabled {
             opacity: 0.6;
         }
+        .pane-controls button {
+            background: #238636;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+        .pane-controls button:hover:not(:disabled) {
+            background: #2ea043;
+        }
+        .pane-controls button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .copy-status {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
         .fixture-message {
             font-size: 0.8rem;
             opacity: 0.75;
@@ -164,10 +186,19 @@
         </section>
         <section class="pane">
             <header>
-                <div>Generated IDL</div>
-                <span>Round-tripped from the parsed AST</span>
+                <div>Code Generation</div>
+                <span>Round-tripped IDL or Rust serialization</span>
             </header>
             <div class="pane-body">
+                <div class="pane-controls">
+                    <label for="generation-select">Output format:</label>
+                    <select id="generation-select">
+                        <option value="idl">IDL</option>
+                        <option value="rust">Rust</option>
+                    </select>
+                    <button type="button" id="copy-generated-btn">Copy output</button>
+                    <span id="copy-status" class="copy-status" aria-live="polite"></span>
+                </div>
                 <textarea id="generated-output" spellcheck="false"></textarea>
             </div>
         </section>
@@ -182,12 +213,16 @@
         const parserOutputEl = document.getElementById("parser-output");
         const generatedTextarea = document.getElementById("generated-output");
         const fixtureSelect = document.getElementById("fixture-select");
+        const generationSelect = document.getElementById("generation-select");
         const fixtureMessageEl = document.getElementById("fixture-message");
+        const copyButton = document.getElementById("copy-generated-btn");
+        const copyStatusEl = document.getElementById("copy-status");
         let generatedEditor;
         let inputEditor;
         let currentErrorMarker = null;
         let currentErrorLine = null;
         let isProgrammaticEditorChange = false;
+        let copyStatusTimer = null;
 
         function clearEditorErrorHighlight() {
             if (currentErrorMarker) {
@@ -247,6 +282,24 @@
         function updateFixtureMessage(message) {
             if (fixtureMessageEl) {
                 fixtureMessageEl.textContent = message ?? "";
+            }
+        }
+
+        function setCopyStatus(message, isError = false) {
+            if (!copyStatusEl) {
+                return;
+            }
+            copyStatusEl.textContent = message ?? "";
+            copyStatusEl.style.color = isError ? "#ff7b72" : "#f0f6fc";
+            if (copyStatusTimer) {
+                clearTimeout(copyStatusTimer);
+                copyStatusTimer = null;
+            }
+            if (message) {
+                copyStatusTimer = setTimeout(() => {
+                    copyStatusEl.textContent = "";
+                    copyStatusTimer = null;
+                }, 2000);
             }
         }
 
@@ -350,7 +403,8 @@
         function renderResult(text) {
             clearEditorErrorHighlight();
             try {
-                const result = analyze_idl_wasm(text);
+                const mode = generationSelect?.value ?? "idl";
+                const result = analyze_idl_wasm(text, mode);
                 const errorMessage = typeof result.error === "string" ? result.error : null;
                 const hasError = Boolean(errorMessage);
                 parserOutputEl.textContent = result.ast ?? "";
@@ -376,6 +430,54 @@
                     inputEditor.getWrapperElement().classList.add("error");
                 }
             }
+        }
+
+        if (generationSelect) {
+            generationSelect.addEventListener("change", () => {
+                if (inputEditor && !isProgrammaticEditorChange) {
+                    renderResult(inputEditor.getValue());
+                }
+            });
+        }
+
+        async function writeToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+            const helper = document.createElement("textarea");
+            helper.value = text;
+            helper.setAttribute("readonly", "");
+            helper.style.position = "absolute";
+            helper.style.left = "-9999px";
+            document.body.appendChild(helper);
+            helper.select();
+            const copied = document.execCommand("copy");
+            document.body.removeChild(helper);
+            return copied;
+        }
+
+        if (copyButton) {
+            copyButton.addEventListener("click", async () => {
+                const contents = generatedEditor
+                    ? generatedEditor.getValue()
+                    : generatedTextarea?.value ?? "";
+                if (!contents) {
+                    setCopyStatus("Nothing to copy", true);
+                    return;
+                }
+                try {
+                    const success = await writeToClipboard(contents);
+                    if (success) {
+                        setCopyStatus("Copied!");
+                    } else {
+                        setCopyStatus("Copy unavailable", true);
+                    }
+                } catch (error) {
+                    console.error("Failed to copy output", error);
+                    setCopyStatus("Copy failed", true);
+                }
+            });
         }
 
         async function bootstrap() {
