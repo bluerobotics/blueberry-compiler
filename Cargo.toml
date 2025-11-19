@@ -6,6 +6,7 @@ members = [
     "crates/generators/idl",
     "crates/generators/codegen-core",
     "crates/generators/c",
+    "crates/generators/cpp",
     "crates/generators/python",
     "crates/generators/rust",
     "crates/wasm",
