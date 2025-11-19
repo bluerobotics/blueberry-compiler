@@ -924,6 +924,12 @@ fn parses_example_idl_end_to_end() {
 }
 
 #[test]
+fn parses_blueberry_full_fixture() {
+    let defs = parse_fixture("blueberry_full.idl");
+    assert!(!defs.is_empty(), "blueberry_full should be a valid file");
+}
+
+#[test]
 fn parses_scoped_module_names() {
     let defs = parse_fixture("scoped_modules.idl");
     assert_eq!(defs.len(), 1, "should parse one top-level module");
