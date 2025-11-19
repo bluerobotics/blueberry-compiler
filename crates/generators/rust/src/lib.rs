@@ -633,7 +633,7 @@ struct TypeRegistry {
     typedefs: HashMap<Vec<String>, TypedefInfo>,
     structs: HashMap<Vec<String>, StructInfo>,
     messages: HashMap<Vec<String>, MessageInfo>,
-    enums: HashMap<Vec<String>, Option<Type>>,
+    enums: HashMap<Vec<String>, Type>,
 }
 
 impl TypeRegistry {
@@ -688,7 +688,12 @@ impl TypeRegistry {
                 Definition::EnumDef(enum_def) => {
                     let mut path = scope.clone();
                     path.push(enum_def.node.name.clone());
-                    self.enums.insert(path, enum_def.node.base_type.clone());
+                    let repr = enum_def
+                        .node
+                        .base_type
+                        .clone()
+                        .unwrap_or(Type::UnsignedLong);
+                    self.enums.insert(path, repr);
                 }
                 Definition::ConstDef(_) | Definition::ImportDef(_) => {}
             }
@@ -780,7 +785,7 @@ impl TypeRegistry {
     }
 
     fn enum_repr(&self, path: &[String]) -> Option<&Type> {
-        self.enums.get(path)?.as_ref()
+        self.enums.get(path)
     }
 
     fn resolve_typedef(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
