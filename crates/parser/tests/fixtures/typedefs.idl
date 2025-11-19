@@ -1,5 +1,6 @@
 // Typedef fixture covering primitives, sequences, and scoped names.
 typedef long MyLong;
+typedef string<32> DeviceAlias;
 typedef sequence<long> LongList;
 typedef sequence<string, 64> BoundedStrings;
 typedef Example::Person PersonAlias;

@@ -3,5 +3,6 @@ struct Person {
     string name;
     long age;
     boolean isActive;
+    string<16> codename;
     long readings[8];
 };
