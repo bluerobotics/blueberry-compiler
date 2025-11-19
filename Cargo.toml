@@ -3,6 +3,7 @@ members = [
     "crates/ast",
     "crates/parser",
     "crates/generators/idl",
+    "crates/generators/rust",
     "crates/wasm",
 ]
 resolver = "2"
