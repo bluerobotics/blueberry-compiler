@@ -729,7 +729,7 @@ mod tests {
         let defs = load_fixture("enum_only.idl");
         let emitted = generate_idl(&defs);
         assert!(
-            emitted.contains("    ACTIVE   = 00,\n    INACTIVE = 1,\n    PENDING  = 2"),
+            emitted.contains("    ACTIVE   = 0,\n    INACTIVE = 1,\n    PENDING  = 2"),
             "expected enum assignments to align:\n{}",
             emitted
         );
