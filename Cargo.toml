@@ -4,6 +4,7 @@ members = [
     "crates/cli",
     "crates/parser",
     "crates/generators/idl",
+    "crates/generators/codegen-core",
     "crates/generators/rust",
     "crates/wasm",
 ]
