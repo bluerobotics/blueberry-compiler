@@ -1,7 +1,9 @@
-// Fixture exercising decimal, octal, and hexadecimal literals.
+// Fixture exercising decimal, octal, hexadecimal, and binary literals.
 const long DECIMAL_TWELVE = 12;
 const long OCTAL_TWELVE = 014;
 const long HEX_TWELVE = 0XC;
 const long LOWER_HEX = 0x1a;
 const long NEGATIVE_OCTAL = -017;
 const long NEGATIVE_HEX = -0X2A;
+const long BINARY_MASK = 0b10100101;
+const long NEGATIVE_BINARY = -0b1001;
