@@ -373,6 +373,7 @@ LiteralValue: ConstValue = {
     <f:FloatLiteral> => ConstValue::Float(f),
     <fx:FixedLiteral> => ConstValue::Fixed(fx),
     <s:StringLiteral> => ConstValue::String(s),
+    <b:BinaryLiteral> => ConstValue::Binary(b),
     "TRUE" => ConstValue::Boolean(true),
     "FALSE" => ConstValue::Boolean(false),
     <c:CharLiteral> => ConstValue::Char(c),
@@ -384,6 +385,10 @@ IntegerLiteral: IntegerLiteral = {
     r"-?0[0-7]+" => IntegerLiteral::from_octal_str(<>),
     r"-?0" => IntegerLiteral::from_decimal_str(<>),
     r"-?[1-9][0-9]*" => IntegerLiteral::from_decimal_str(<>),
+};
+
+BinaryLiteral: BinaryLiteral = {
+    r"-?0[bB][01]+" => BinaryLiteral::from_literal_str(<>),
 };
 
 FloatLiteral: f64 = {

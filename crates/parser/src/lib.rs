@@ -214,9 +214,10 @@ impl NumericConstantFolder {
         current_path: Option<&[String]>,
     ) -> Option<ConstValue> {
         match value {
-            ConstValue::Integer(_) | ConstValue::Float(_) | ConstValue::Fixed(_) => {
-                Some(value.clone())
-            }
+            ConstValue::Integer(_)
+            | ConstValue::Float(_)
+            | ConstValue::Fixed(_)
+            | ConstValue::Binary(_) => Some(value.clone()),
             ConstValue::ScopedName(names) => self.resolve_scoped_value(names, scope, current_path),
             ConstValue::UnaryOp { .. } | ConstValue::BinaryOp { .. } => {
                 let expression = self.build_numeric_expression(value, scope, current_path)?;
@@ -236,6 +237,7 @@ impl NumericConstantFolder {
             ConstValue::Integer(literal) => Some(literal.value.to_string()),
             ConstValue::Float(f) => Some(format_float_value(*f)),
             ConstValue::Fixed(fixed) => Some(format_float_value(fixed.to_f64())),
+            ConstValue::Binary(literal) => Some(literal.to_i64().to_string()),
             ConstValue::ScopedName(names) => {
                 let resolved = self.resolve_scoped_value(names, scope, current_path)?;
                 self.build_numeric_expression(&resolved, scope, current_path)
@@ -386,7 +388,10 @@ impl NumericConstantFolder {
     fn is_numeric_literal(value: &ConstValue) -> bool {
         matches!(
             value,
-            ConstValue::Integer(_) | ConstValue::Float(_) | ConstValue::Fixed(_)
+            ConstValue::Integer(_)
+                | ConstValue::Float(_)
+                | ConstValue::Fixed(_)
+                | ConstValue::Binary(_)
         )
     }
 }
@@ -429,6 +434,12 @@ fn assign_enum_members(members: &mut [EnumMember]) {
         match &member.value {
             Some(ConstValue::Integer(integer_literal)) => {
                 let mut new_value = integer_literal.clone();
+                new_value.value = new_value.value.checked_add(1).unwrap();
+                next_value = Some(new_value);
+            }
+            Some(ConstValue::Binary(binary_literal)) => {
+                let mut new_value =
+                    IntegerLiteral::new(binary_literal.to_i64(), IntegerBase::Decimal);
                 new_value.value = new_value.value.checked_add(1).unwrap();
                 next_value = Some(new_value);
             }
