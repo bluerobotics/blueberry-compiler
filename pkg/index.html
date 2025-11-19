@@ -44,12 +44,48 @@
             background: #161b22;
             border-bottom: 1px solid #30363d;
             font-weight: 600;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .pane-heading {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            min-width: 0;
+            flex: 1;
         }
         section.pane header span {
             display: block;
             font-size: 0.85rem;
             opacity: 0.7;
             font-weight: 400;
+        }
+        .output-tabs {
+            display: flex;
+            gap: 0.35rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .output-tab-button {
+            background: transparent;
+            border: 1px solid #30363d;
+            color: #f0f6fc;
+            border-radius: 999px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        }
+        .output-tab-button.active {
+            background: #238636;
+            border-color: #238636;
+        }
+        .output-tab-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
         }
         .pane-body {
             flex: 1;
@@ -104,6 +140,15 @@
         .copy-status {
             font-size: 0.8rem;
             opacity: 0.7;
+        }
+        .output-info {
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #30363d;
+            font-size: 0.85rem;
+            opacity: 0.8;
+            min-height: 2.25rem;
+            display: flex;
+            align-items: center;
         }
         .fixture-message {
             font-size: 0.8rem;
@@ -163,8 +208,10 @@
     <main>
         <section class="pane">
             <header>
-                <div>Input IDL</div>
-                <span>CodeMirror highlighting & live parsing</span>
+                <div class="pane-heading">
+                    <div>Input IDL</div>
+                    <span>CodeMirror highlighting & live parsing</span>
+                </div>
             </header>
             <div class="pane-body">
                 <div class="pane-controls">
@@ -179,26 +226,37 @@
         </section>
         <section class="pane">
             <header>
-                <div>Parser Output</div>
-                <span>Formatted AST or error message</span>
+                <div class="pane-heading">
+                    <div>Parser Output</div>
+                    <span>Formatted AST or error message</span>
+                </div>
             </header>
             <pre id="parser-output" class="output-pane">Loading parser...</pre>
         </section>
         <section class="pane">
             <header>
-                <div>Code Generation</div>
-                <span>Round-tripped IDL or Rust serialization</span>
+                <div class="pane-heading">
+                    <div>Generated Output</div>
+                    <span>Round-tripped IDL or language-specific code</span>
+                </div>
+                <div class="output-tabs">
+                    <button class="output-tab-button active" data-output-tab="idl" type="button">IDL</button>
+                    <button class="output-tab-button" data-output-tab="rust" type="button">Rust</button>
+                    <button class="output-tab-button" data-output-tab="python" type="button">Python</button>
+                    <button class="output-tab-button" data-output-tab="c" type="button">C</button>
+                    <button class="output-tab-button" data-output-tab="cpp" type="button">C++</button>
+                </div>
             </header>
             <div class="pane-body">
                 <div class="pane-controls">
-                    <label for="generation-select">Output format:</label>
+                    <label for="generation-select">Base output:</label>
                     <select id="generation-select">
                         <option value="idl">IDL</option>
-                        <option value="rust">Rust</option>
                     </select>
                     <button type="button" id="copy-generated-btn">Copy output</button>
                     <span id="copy-status" class="copy-status" aria-live="polite"></span>
                 </div>
+                <div class="output-info" id="output-info">Round-tripped IDL</div>
                 <textarea id="generated-output" spellcheck="false"></textarea>
             </div>
         </section>
@@ -206,6 +264,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
     <script type="module">
         import init, { analyze_idl_wasm } from "./blueberry_wasm.js";
 
@@ -217,6 +276,21 @@
         const fixtureMessageEl = document.getElementById("fixture-message");
         const copyButton = document.getElementById("copy-generated-btn");
         const copyStatusEl = document.getElementById("copy-status");
+        const outputInfoEl = document.getElementById("output-info");
+        const OUTPUT_TABS = {
+            idl: { label: "IDL", mode: "text/x-csrc", commentPrefix: "//" },
+            rust: { label: "Rust", mode: "text/x-rustsrc", commentPrefix: "//" },
+            python: { label: "Python", mode: "text/x-python", commentPrefix: "#" },
+            c: { label: "C", mode: "text/x-csrc", commentPrefix: "//" },
+            cpp: { label: "C++", mode: "text/x-c++src", commentPrefix: "//" },
+        };
+        const LANGUAGE_TABS = ["rust", "python", "c", "cpp"];
+        const outputState = {};
+        Object.keys(OUTPUT_TABS).forEach((key) => {
+            outputState[key] = { content: "", hasError: false, info: "" };
+        });
+        let currentOutputTab = "idl";
+        const outputTabButtons = Array.from(document.querySelectorAll("[data-output-tab]"));
         let generatedEditor;
         let inputEditor;
         let currentErrorMarker = null;
@@ -234,6 +308,158 @@
                 currentErrorLine = null;
             }
         }
+
+        function updateOutputState(tabId, state) {
+            if (!outputState[tabId]) {
+                outputState[tabId] = { content: "", hasError: false, info: "" };
+            }
+            const target = outputState[tabId];
+            target.content = typeof state.content === "string" ? state.content : "";
+            target.hasError = Boolean(state.hasError);
+            target.info = typeof state.info === "string" ? state.info : "";
+        }
+
+        function normalizeFiles(rawFiles) {
+            if (!Array.isArray(rawFiles)) {
+                return [];
+            }
+            return rawFiles
+                .map((file) => {
+                    if (!file || typeof file !== "object") {
+                        return null;
+                    }
+                    const path = typeof file.path === "string" ? file.path : "";
+                    const contents = typeof file.contents === "string" ? file.contents : "";
+                    if (!path && !contents) {
+                        return null;
+                    }
+                    return { path, contents };
+                })
+                .filter(Boolean);
+        }
+
+        function formatGeneratedFiles(tabId, files) {
+            if (!Array.isArray(files) || files.length === 0) {
+                return "";
+            }
+            const config = OUTPUT_TABS[tabId] ?? {};
+            const prefix = typeof config.commentPrefix === "string" ? config.commentPrefix : "";
+            return files
+                .map((file) => {
+                    const header = file.path
+                        ? `${prefix ? `${prefix} ` : ""}File: ${file.path}`
+                        : "";
+                    return header ? `${header}\n${file.contents ?? ""}` : file.contents ?? "";
+                })
+                .join("\n\n");
+        }
+
+        function describeFilesInfo(files) {
+            if (!files.length) {
+                return "No files generated";
+            }
+            if (files.length === 1) {
+                return files[0].path ? `File: ${files[0].path}` : "Single file generated";
+            }
+            return `${files.length} files generated`;
+        }
+
+        function fillOutputStatesForFailure(message) {
+            const details =
+                typeof message === "string" && message.length > 0 ? message : "Unknown error";
+            updateOutputState("idl", {
+                content: `Cannot generate IDL:\n${details}`,
+                hasError: true,
+                info: "IDL generation failed",
+            });
+            LANGUAGE_TABS.forEach((lang) => {
+                const label = OUTPUT_TABS[lang]?.label ?? lang.toUpperCase();
+                updateOutputState(lang, {
+                    content: `Cannot generate ${label} code:\n${details}`,
+                    hasError: true,
+                    info: `${label} generation failed`,
+                });
+            });
+        }
+
+        function applyCodegenResults(rawCodegen) {
+            const codegen =
+                rawCodegen && typeof rawCodegen === "object" ? rawCodegen : Object.create(null);
+            LANGUAGE_TABS.forEach((lang) => {
+                const config = OUTPUT_TABS[lang];
+                const langResult =
+                    codegen && typeof codegen[lang] === "object" ? codegen[lang] : null;
+                const langError =
+                    langResult && typeof langResult.error === "string" ? langResult.error : null;
+                const files = normalizeFiles(langResult && langResult.files);
+                if (langError) {
+                    updateOutputState(lang, {
+                        content: `Code generation error:\n${langError}`,
+                        hasError: true,
+                        info: langError,
+                    });
+                    return;
+                }
+                if (files.length === 0) {
+                    updateOutputState(lang, {
+                        content: `No ${config.label} files were generated.`,
+                        hasError: false,
+                        info: "No files generated",
+                    });
+                    return;
+                }
+                updateOutputState(lang, {
+                    content: formatGeneratedFiles(lang, files),
+                    hasError: false,
+                    info: describeFilesInfo(files),
+                });
+            });
+        }
+
+        function updateOutputTabActiveState() {
+            outputTabButtons.forEach((button) => {
+                const tabId = button.dataset.outputTab;
+                button.classList.toggle("active", tabId === currentOutputTab);
+            });
+        }
+
+        function applyOutputToEditor() {
+            updateOutputTabActiveState();
+            const config = OUTPUT_TABS[currentOutputTab] ?? OUTPUT_TABS.idl;
+            const state = outputState[currentOutputTab] ?? { content: "", hasError: false, info: "" };
+            const content = typeof state.content === "string" ? state.content : "";
+            if (generatedEditor) {
+                generatedEditor.setOption("mode", config.mode ?? "text/x-csrc");
+                generatedEditor.setValue(content);
+                const wrapper = generatedEditor.getWrapperElement();
+                if (wrapper) {
+                    wrapper.classList.toggle("error", Boolean(state.hasError));
+                }
+            } else if (generatedTextarea) {
+                generatedTextarea.value = content;
+                generatedTextarea.classList.toggle("error", Boolean(state.hasError));
+            }
+            if (outputInfoEl) {
+                outputInfoEl.textContent = state.info ?? "";
+            }
+        }
+
+        function setOutputTab(tabId) {
+            if (!OUTPUT_TABS[tabId]) {
+                return;
+            }
+            currentOutputTab = tabId;
+            applyOutputToEditor();
+        }
+
+        outputTabButtons.forEach((button) => {
+            button.addEventListener("click", () => {
+                const tabId = button.dataset.outputTab;
+                if (tabId) {
+                    setOutputTab(tabId);
+                }
+            });
+        });
 
         function extractErrorOffsets(errorMessage) {
             if (typeof errorMessage !== "string") {
@@ -408,27 +634,32 @@
                 const errorMessage = typeof result.error === "string" ? result.error : null;
                 const hasError = Boolean(errorMessage);
                 parserOutputEl.textContent = result.ast ?? "";
-                if (generatedEditor) {
-                    generatedEditor.setValue(result.generated ?? "");
-                    generatedEditor.getWrapperElement().classList.toggle("error", hasError);
-                }
                 parserOutputEl.classList.toggle("error", hasError);
                 if (inputEditor) {
                     inputEditor.getWrapperElement().classList.toggle("error", hasError);
                 }
                 if (hasError) {
                     highlightParseError(errorMessage);
+                    fillOutputStatesForFailure(errorMessage);
+                } else {
+                    const generated = typeof result.generated === "string" ? result.generated : "";
+                    updateOutputState("idl", {
+                        content: generated,
+                        hasError: false,
+                        info: "Round-tripped IDL",
+                    });
+                    applyCodegenResults(result.codegen);
                 }
+                applyOutputToEditor();
             } catch (err) {
-                parserOutputEl.textContent = `Runtime error: ${err}`;
+                const runtimeMessage = `Runtime error: ${err}`;
+                parserOutputEl.textContent = runtimeMessage;
                 parserOutputEl.classList.add("error");
-                if (generatedEditor) {
-                    generatedEditor.setValue(`Runtime error: ${err}`);
-                    generatedEditor.getWrapperElement().classList.add("error");
-                }
                 if (inputEditor) {
                     inputEditor.getWrapperElement().classList.add("error");
                 }
+                fillOutputStatesForFailure(runtimeMessage);
+                applyOutputToEditor();
             }
         }
 
@@ -530,12 +761,11 @@
         }
 
         bootstrap().catch((err) => {
-            parserOutputEl.textContent = `Failed to initialize parser: ${err}`;
-            if (generatedEditor) {
-                generatedEditor.setValue(`Failed to initialize parser: ${err}`);
-            } else {
-                generatedTextarea.value = `Failed to initialize parser: ${err}`;
-            }
+            const message = `Failed to initialize parser: ${err}`;
+            parserOutputEl.textContent = message;
+            parserOutputEl.classList.add("error");
+            fillOutputStatesForFailure(message);
+            applyOutputToEditor();
         });
     </script>
 </body>
