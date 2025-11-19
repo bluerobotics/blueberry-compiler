@@ -274,15 +274,27 @@ impl RustGenerator {
             .as_ref()
             .map(|t| self.render_type(t, scope))
             .unwrap_or_else(|| quote!(u32));
-        let variants = enum_def.node.enumerators.iter().map(|member| {
-            let name = format_ident!("{}", member.name);
-            if let Some(value) = &member.value {
-                let literal = self.render_const(value, scope);
-                quote!(#name = #literal,)
-            } else {
-                quote!(#name,)
-            }
-        });
+        let variants = enum_def
+            .node
+            .enumerators
+            .iter()
+            .enumerate()
+            .map(|(idx, member)| {
+                let name = format_ident!("{}", member.name);
+                let default_attr = (idx == 0).then(|| quote!(#[default]));
+                if let Some(value) = &member.value {
+                    let literal = self.render_const(value, scope);
+                    quote! {
+                        #default_attr
+                        #name = #literal,
+                    }
+                } else {
+                    quote! {
+                        #default_attr
+                        #name,
+                    }
+                }
+            });
         let matches = enum_def.node.enumerators.iter().map(|member| {
             let name = format_ident!("{}", member.name);
             let literal = member
@@ -294,13 +306,15 @@ impl RustGenerator {
         });
         quote! {
             #[repr(#repr_ty)]
-            #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+            #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
             pub enum #ident {
                 #(#variants)*
             }
 
-            impl #ident {
-                pub fn from_repr(value: #repr_ty) -> Result<Self, runtime::Error> {
+            impl ::core::convert::TryFrom<#repr_ty> for #ident {
+                type Error = runtime::Error;
+
+                fn try_from(value: #repr_ty) -> Result<Self, Self::Error> {
                     match value {
                         #(#matches)*
                         _ => Err(runtime::Error::InvalidEnum {
@@ -308,6 +322,12 @@ impl RustGenerator {
                             value: value as i64,
                         }),
                     }
+                }
+            }
+
+            impl From<#ident> for #repr_ty {
+                fn from(value: #ident) -> Self {
+                    value as #repr_ty
                 }
             }
         }
@@ -361,7 +381,7 @@ impl RustGenerator {
         });
 
         quote! {
-            #[derive(Clone, Debug, PartialEq)]
+            #[derive(Clone, Debug, PartialEq, Default)]
             pub struct #ident {
                 #(#fields)*
             }
@@ -384,6 +404,7 @@ impl RustGenerator {
                     })
                 }
             }
+
         }
     }
 
@@ -437,7 +458,7 @@ impl RustGenerator {
             Type::ScopedName(path) => {
                 if let Some(base_type) = self.registry.enum_repr(path) {
                     let writer = self.writer_fn(base_type);
-                    quote!(runtime::#writer(buf, *#expr as _);)
+                    quote!(runtime::#writer(buf, (*#expr).into());)
                 } else {
                     quote!(runtime::BinarySerializable::write_into(#expr, buf)?;)
                 }
@@ -475,9 +496,10 @@ impl RustGenerator {
                 if let Some(base_type) = self.registry.enum_repr(path) {
                     let reader = self.reader_fn(base_type);
                     let enum_path = self.relative_path(path, scope);
+                    let repr_ty = self.render_type(base_type, scope);
                     quote! {{
                         let raw = runtime::#reader(cursor)?;
-                        #enum_path::from_repr(raw)
+                        <#enum_path as ::core::convert::TryFrom<#repr_ty>>::try_from(raw)
                     }}
                 } else {
                     let path_tokens = self.relative_path(path, scope);
