@@ -129,7 +129,12 @@ impl IdlGenerator {
         self.emit_comments(&struct_def.comments, indent);
         self.emit_annotations(&struct_def.annotations, indent);
         let name = ident(&struct_def.node.name);
-        let header = quote!(struct #name);
+        let header = if let Some(base) = &struct_def.node.base {
+            let base_tokens = render_scoped_name_tokens(base);
+            quote!(struct #name : #base_tokens)
+        } else {
+            quote!(struct #name)
+        };
         self.write_tokens_with_suffix(indent, header, " {");
         for member in &struct_def.node.members {
             self.emit_comments(&member.comments, indent + 1);
@@ -148,7 +153,12 @@ impl IdlGenerator {
         self.emit_comments(&message_def.comments, indent);
         self.emit_annotations(&message_def.annotations, indent);
         let name = ident(&message_def.node.name);
-        let header = quote!(message #name);
+        let header = if let Some(base) = &message_def.node.base {
+            let base_tokens = render_scoped_name_tokens(base);
+            quote!(message #name : #base_tokens)
+        } else {
+            quote!(message #name)
+        };
         self.write_tokens_with_suffix(indent, header, " {");
         for member in &message_def.node.members {
             self.emit_comments(&member.comments, indent + 1);
@@ -751,6 +761,22 @@ mod tests {
         assert!(
             emitted.contains("    ACTIVE   = 0,\n    INACTIVE = 1,\n    PENDING  = 2"),
             "expected enum assignments to align:\n{}",
+            emitted
+        );
+    }
+
+    #[test]
+    fn emits_struct_and_message_inheritance() {
+        let defs = load_fixture("inheritance.idl");
+        let emitted = generate_idl(&defs);
+        assert!(
+            emitted.contains("struct DerivedStruct : BaseStruct"),
+            "expected struct inheritance header in output:\n{}",
+            emitted
+        );
+        assert!(
+            emitted.contains("message DerivedMessage : BaseMessage"),
+            "expected message inheritance header in output:\n{}",
             emitted
         );
     }
