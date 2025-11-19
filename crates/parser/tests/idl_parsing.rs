@@ -747,6 +747,56 @@ fn parses_message_definitions() {
 }
 
 #[test]
+fn parses_struct_and_message_inheritance() {
+    let defs = parse_fixture("inheritance.idl");
+    assert_eq!(defs.len(), 4);
+
+    let derived_struct = defs.iter().find_map(|def| match def {
+        Definition::StructDef(struct_def) if struct_def.node.name == "DerivedStruct" => {
+            Some(struct_def)
+        }
+        _ => None,
+    });
+    let derived_struct = derived_struct.expect("fixture should include DerivedStruct");
+    assert_eq!(derived_struct.node.base, Some(scoped(&["BaseStruct"])));
+    assert!(
+        derived_struct
+            .node
+            .members
+            .iter()
+            .any(|member| member.node.name == "active"),
+        "derived struct should retain its members"
+    );
+
+    let derived_message = defs.iter().find_map(|def| match def {
+        Definition::MessageDef(message_def) if message_def.node.name == "DerivedMessage" => {
+            Some(message_def)
+        }
+        _ => None,
+    });
+    let derived_message = derived_message.expect("fixture should include DerivedMessage");
+    assert_eq!(derived_message.node.base, Some(scoped(&["BaseMessage"])));
+    assert_eq!(derived_message.annotations.len(), 1);
+    assert_eq!(derived_message.annotations[0].name, scoped(&["topic"]));
+}
+
+#[test]
+fn rejects_multiple_struct_inheritance() {
+    let src = r#"
+struct BaseA {};
+struct BaseB {};
+struct Derived : BaseA, BaseB {
+    long id;
+};
+"#;
+    let err = parse_idl(src).expect_err("struct inheritance should reject multiple bases");
+    assert!(
+        err.contains("Parse error"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
 fn parses_message_with_only_topic_annotation() {
     let src = r#"
 @topic(value = "blueberry/devices/minimal")
