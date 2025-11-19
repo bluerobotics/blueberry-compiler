@@ -112,9 +112,35 @@ Definition: Definition = {
 };
 
 ModuleDef: ModuleDef = {
-    "module" <name:Identifier> "{" <defs:Definition*> "}" ";" => ModuleDef {
-        name,
-        definitions: defs,
+    "module" <scoped_name:ScopedName> "{" <defs:Definition*> "}" ";" => {
+        // Inline expansion of scoped module names into nested modules
+        // module A::B::C { defs } becomes module A { module B { module C { defs } } }
+        {
+            let mut names = scoped_name;
+            if names.len() == 1 {
+                ModuleDef {
+                    name: names.into_iter().next().unwrap(),
+                    definitions: defs,
+                }
+            } else {
+                // Build from innermost to outermost
+                let innermost_name = names.pop().unwrap();
+                let mut current_module = ModuleDef {
+                    name: innermost_name,
+                    definitions: defs,
+                };
+
+                while let Some(outer_name) = names.pop() {
+                    let wrapped = Definition::ModuleDef(Commented::new(current_module, vec![]));
+                    current_module = ModuleDef {
+                        name: outer_name,
+                        definitions: vec![wrapped],
+                    };
+                }
+
+                current_module
+            }
+        }
     }
 };
 
