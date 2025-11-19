@@ -836,7 +836,8 @@ impl TypeRegistry {
 
 fn map_builtin_ident(name: &str) -> Option<Type> {
     match name {
-        "int8" | "int16" => Some(Type::Short),
+        "int8" => Some(Type::Octet),
+        "int16" => Some(Type::Short),
         "int32" => Some(Type::Long),
         "int64" => Some(Type::LongLong),
         "uint8" => Some(Type::Octet),
