@@ -136,6 +136,7 @@ pub enum ConstValue {
     Integer(IntegerLiteral),
     Float(f64),
     Fixed(FixedPointLiteral),
+    Binary(BinaryLiteral),
     String(String),
     Boolean(bool),
     Char(char),
@@ -242,6 +243,45 @@ impl IntegerLiteral {
         let magnitude = i64::from_str_radix(digits, 16).unwrap();
         let value = if is_negative { -magnitude } else { magnitude };
         IntegerLiteral::new(value, IntegerBase::Hexadecimal)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryLiteral {
+    pub digits: String,
+    pub negative: bool,
+}
+
+impl BinaryLiteral {
+    pub fn from_literal_str(raw: &str) -> Self {
+        let (negative, digits) = split_sign(raw);
+        let digits = digits
+            .strip_prefix("0b")
+            .or_else(|| digits.strip_prefix("0B"))
+            .expect("binary literal must start with 0b or 0B")
+            .to_string();
+        assert!(
+            !digits.is_empty(),
+            "binary literal must contain at least one digit"
+        );
+        assert!(
+            digits.chars().all(|ch| ch == '0' || ch == '1'),
+            "binary literal digits must be 0 or 1"
+        );
+        BinaryLiteral { digits, negative }
+    }
+
+    pub fn to_i64(&self) -> i64 {
+        let magnitude = i64::from_str_radix(&self.digits, 2).unwrap();
+        if self.negative { -magnitude } else { magnitude }
+    }
+
+    pub fn to_source(&self) -> String {
+        if self.negative {
+            format!("-0b{}", self.digits)
+        } else {
+            format!("0b{}", self.digits)
+        }
     }
 }
 
