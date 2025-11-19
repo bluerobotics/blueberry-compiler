@@ -1,7 +1,7 @@
 #![cfg(target_arch = "wasm32")]
 
+use blueberry_generator_idl::generate_idl;
 use blueberry_generator_rust::generate_rust;
-use blueberry_idl_generator::generate_idl;
 use blueberry_parser::parse_idl;
 use js_sys::{Object, Reflect};
 use wasm_bindgen::{JsValue, prelude::*};
