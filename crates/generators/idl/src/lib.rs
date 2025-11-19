@@ -278,7 +278,14 @@ fn render_type_tokens(type_: &Type) -> TokenStream {
         Type::Char => quote!(char),
         Type::WChar => quote!(wchar),
         Type::Octet => quote!(octet),
-        Type::String => quote!(string),
+        Type::String { bound } => {
+            if let Some(size) = bound {
+                let literal = Literal::u32_unsuffixed(*size);
+                quote!(string<#literal>)
+            } else {
+                quote!(string)
+            }
+        }
         Type::WString => quote!(wstring),
         Type::Sequence { element_type, size } => {
             let element_tokens = render_type_tokens(element_type);
