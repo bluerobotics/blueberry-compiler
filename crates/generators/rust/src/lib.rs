@@ -46,6 +46,7 @@ impl RustGenerator {
         quote! {
             pub mod blueberry_generated {
                 #runtime
+                pub use runtime::BinarySerializable;
                 #(#defs)*
             }
         }
@@ -92,6 +93,23 @@ impl RustGenerator {
                     StringTooLong { limit: usize, actual: usize },
                     SequenceTooLong { limit: usize, actual: usize },
                     InvalidEnum { name: &'static str, value: i64 },
+                }
+
+                pub trait BinarySerializable: Sized {
+                    fn serialize(&self) -> Result<Vec<u8>, Error> {
+                        let mut buf = Vec::new();
+                        self.write_into(&mut buf)?;
+                        Ok(buf)
+                    }
+
+                    fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
+
+                    fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+                        let mut cursor = Cursor::new(bytes);
+                        Self::read_from(&mut cursor)
+                    }
+
+                    fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
                 }
 
                 pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
@@ -348,14 +366,8 @@ impl RustGenerator {
                 #(#fields)*
             }
 
-            impl #ident {
-                pub fn serialize(&self) -> Result<Vec<u8>, runtime::Error> {
-                    let mut buf = Vec::new();
-                    self.write_into(&mut buf)?;
-                    Ok(buf)
-                }
-
-                pub fn write_into(
+            impl runtime::BinarySerializable for #ident {
+                fn write_into(
                     &self,
                     buf: &mut Vec<u8>,
                 ) -> Result<(), runtime::Error> {
@@ -363,14 +375,7 @@ impl RustGenerator {
                     Ok(())
                 }
 
-                pub fn deserialize(
-                    bytes: &[u8],
-                ) -> Result<Self, runtime::Error> {
-                    let mut cursor = std::io::Cursor::new(bytes);
-                    Self::read_from(&mut cursor)
-                }
-
-                pub fn read_from(
+                fn read_from(
                     cursor: &mut std::io::Cursor<&[u8]>,
                 ) -> Result<Self, runtime::Error> {
                     #(#reads)*
@@ -434,7 +439,7 @@ impl RustGenerator {
                     let writer = self.writer_fn(base_type);
                     quote!(runtime::#writer(buf, *#expr as _);)
                 } else {
-                    quote!(#expr.write_into(buf)?;)
+                    quote!(runtime::BinarySerializable::write_into(#expr, buf)?;)
                 }
             }
             _ => quote! {
@@ -476,7 +481,7 @@ impl RustGenerator {
                     }}
                 } else {
                     let path_tokens = self.relative_path(path, scope);
-                    quote!(#path_tokens::read_from(cursor))
+                    quote!(<#path_tokens as runtime::BinarySerializable>::read_from(cursor))
                 }
             }
             _ => quote! {
