@@ -309,7 +309,9 @@ pub enum Type {
     Char,
     WChar,
     Octet,
-    String,
+    String {
+        bound: Option<u32>,
+    },
     WString,
     // Sequence type
     Sequence {
