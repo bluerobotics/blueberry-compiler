@@ -240,11 +240,11 @@ fn parses_struct_members_and_arrays() {
     };
 
     assert_eq!(struct_def.name, "Person");
-    assert_eq!(struct_def.members.len(), 4);
+    assert_eq!(struct_def.members.len(), 5);
 
     let name_member = &struct_def.members[0].node;
     assert_eq!(name_member.name, "name");
-    assert!(matches!(name_member.type_, Type::String));
+    assert!(matches!(name_member.type_, Type::String { bound: None }));
 
     let age_member = &struct_def.members[1].node;
     assert_eq!(age_member.name, "age");
@@ -254,7 +254,14 @@ fn parses_struct_members_and_arrays() {
     assert_eq!(active_member.name, "isActive");
     assert!(matches!(active_member.type_, Type::Boolean));
 
-    let readings_member = &struct_def.members[3].node;
+    let codename_member = &struct_def.members[3].node;
+    assert_eq!(codename_member.name, "codename");
+    assert!(matches!(
+        codename_member.type_,
+        Type::String { bound: Some(16) }
+    ));
+
+    let readings_member = &struct_def.members[4].node;
     assert_eq!(readings_member.name, "readings");
     match &readings_member.type_ {
         Type::Array {
@@ -271,7 +278,7 @@ fn parses_struct_members_and_arrays() {
 #[test]
 fn parses_typedefs_sequences_and_scoped_names() {
     let defs = parse_fixture("typedefs.idl");
-    assert_eq!(defs.len(), 6);
+    assert_eq!(defs.len(), 7);
 
     let mut iter = defs.iter();
 
@@ -287,6 +294,11 @@ fn parses_typedefs_sequences_and_scoped_names() {
         Type::Long
     ));
 
+    assert!(matches!(
+        expect_typedef(iter.next().unwrap()).base_type,
+        Type::String { bound: Some(32) }
+    ));
+
     match &expect_typedef(iter.next().unwrap()).base_type {
         Type::Sequence { element_type, size } => {
             assert!(matches!(**element_type, Type::Long));
@@ -297,7 +309,7 @@ fn parses_typedefs_sequences_and_scoped_names() {
 
     match &expect_typedef(iter.next().unwrap()).base_type {
         Type::Sequence { element_type, size } => {
-            assert!(matches!(**element_type, Type::String));
+            assert!(matches!(**element_type, Type::String { bound: None }));
             assert_eq!(size, &Some(64));
         }
         other => panic!("expected bounded sequence type, found {:?}", other),

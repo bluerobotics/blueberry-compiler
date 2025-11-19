@@ -295,7 +295,10 @@ Type: Type = {
     "char" => Type::Char,
     "wchar" => Type::WChar,
     "octet" => Type::Octet,
-    "string" => Type::String,
+    "string" => Type::String { bound: None },
+    "string" "<" <size:PositiveInteger> ">" => Type::String {
+        bound: Some(size),
+    },
     "wstring" => Type::WString,
 
     // Sequence type
