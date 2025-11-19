@@ -225,17 +225,24 @@ EnumValue: ConstValue = {
 };
 
 StructDef: StructDef = {
-    "struct" <name:Identifier> "{" <members:MemberList> "}" ";" => StructDef {
+    "struct" <name:Identifier> <base:StructInheritance> "{" <members:MemberList> "}" ";" => StructDef {
         name,
         members,
+        base,
     }
 };
 
 MessageDef: MessageDef = {
-    "message" <name:Identifier> "{" <members:MemberList> "}" ";" => MessageDef {
+    "message" <name:Identifier> <base:StructInheritance> "{" <members:MemberList> "}" ";" => MessageDef {
         name,
         members,
+        base,
     }
+};
+
+StructInheritance: Option<Vec<String>> = {
+    ":" <name:ScopedName> => Some(name),
+    => None,
 };
 
 MemberList: Vec<Commented<Member>> = {
