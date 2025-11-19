@@ -1,7 +1,7 @@
 use blueberry_ast::{
-    Annotation, AnnotationParam, BinaryOperator, Commented, ConstDef, ConstValue, Definition,
-    EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral, MessageDef,
-    ModuleDef, StructDef, Type, TypeDef, UnaryOperator,
+    Annotation, AnnotationParam, BinaryLiteral, BinaryOperator, Commented, ConstDef, ConstValue,
+    Definition, EnumDef, FixedPointLiteral, ImportDef, ImportScope, IntegerBase, IntegerLiteral,
+    MessageDef, ModuleDef, StructDef, Type, TypeDef, UnaryOperator,
 };
 use proc_macro2::{Delimiter, Ident, Literal, Spacing, TokenStream, TokenTree};
 use quote::{format_ident, quote};
@@ -311,6 +311,7 @@ fn render_const_value_fragment(value: &ConstValue) -> LiteralFragment {
             LiteralFragment::Tokens(literal_string_tokens(&format_float_literal(*f)))
         }
         ConstValue::Fixed(fixed) => LiteralFragment::Raw(format_fixed_point_literal(fixed)),
+        ConstValue::Binary(literal) => LiteralFragment::Raw(format_binary_literal(literal)),
         ConstValue::String(s) => {
             let literal = Literal::string(s);
             LiteralFragment::Tokens(quote!(#literal))
@@ -501,6 +502,10 @@ fn format_integer_literal(literal: &IntegerLiteral) -> String {
         IntegerBase::Octal => format_with_base_prefix(literal.value, 8, "0"),
         IntegerBase::Hexadecimal => format_with_base_prefix(literal.value, 16, "0x"),
     }
+}
+
+fn format_binary_literal(literal: &BinaryLiteral) -> String {
+    literal.to_source()
 }
 
 fn format_with_base_prefix(value: i64, radix: u32, prefix: &str) -> String {
