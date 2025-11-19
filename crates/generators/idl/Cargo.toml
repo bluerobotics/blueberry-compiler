@@ -1,5 +1,5 @@
 [package]
-name = "blueberry-idl-generator"
+name = "blueberry-generator-idl"
 edition = "2024"
 version = "0.1.0"
 
