@@ -1,4 +1,5 @@
 annotations.idl
+blueberry_full.idl
 const_folding.idl
 consts.idl
 enum_auto_values.idl
