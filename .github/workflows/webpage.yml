@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: wasm-pack build crates/wasm --target web --out-dir ../../pkg --out-name blueberry_wasm
 
+      - name: Sync parser fixtures into pkg
+        run: ./pkg/sync_playground_fixtures.sh
+
       - name: Organize files
         run: |
           rm pkg/.gitignore
