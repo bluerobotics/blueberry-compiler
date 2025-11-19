@@ -9,6 +9,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 blueberry-parser = { path = "../parser", version = "0.1.0" }
 blueberry-generator-idl = { path = "../generators/idl", version = "0.1.0" }
+blueberry-codegen-core = { path = "../generators/codegen-core", version = "0.1.0" }
+blueberry-generator-c = { path = "../generators/c", version = "0.1.0" }
+blueberry-generator-cpp = { path = "../generators/cpp", version = "0.1.0" }
+blueberry-generator-python = { path = "../generators/python", version = "0.1.0" }
 blueberry-generator-rust = { path = "../generators/rust", version = "0.1.0" }
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
