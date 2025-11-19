@@ -97,12 +97,14 @@ pub struct EnumMember {
 pub struct StructDef {
     pub name: String,
     pub members: Vec<Commented<Member>>,
+    pub base: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageDef {
     pub name: String,
     pub members: Vec<Commented<Member>>,
+    pub base: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
