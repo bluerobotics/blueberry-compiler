@@ -1,6 +1,6 @@
 use blueberry_parser::{
-    AnnotationParam, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral, ImportScope,
-    IntegerBase, IntegerLiteral, Type, TypeDef, parse_idl,
+    AnnotationParam, BinaryLiteral, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral,
+    ImportScope, IntegerBase, IntegerLiteral, Type, TypeDef, parse_idl,
 };
 use std::{fs, path::Path};
 
@@ -72,6 +72,31 @@ fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
             literal
         }
         other => panic!("expected integer const {}, found {:?}", expected, other),
+    }
+}
+
+fn expect_binary<'a>(
+    value: &'a ConstValue,
+    expected: i64,
+    expected_digits: &str,
+) -> &'a BinaryLiteral {
+    match value {
+        ConstValue::Binary(literal) => {
+            assert_eq!(
+                literal.to_i64(),
+                expected,
+                "expected binary value {}, found {}",
+                expected,
+                literal.to_i64()
+            );
+            assert_eq!(
+                literal.digits, expected_digits,
+                "expected binary digits {}, found {}",
+                expected_digits, literal.digits
+            );
+            literal
+        }
+        other => panic!("expected binary const {}, found {:?}", expected, other),
     }
 }
 
@@ -350,7 +375,7 @@ fn parses_constant_values() {
 #[test]
 fn parses_integer_literal_bases() {
     let defs = parse_fixture("integer_literals.idl");
-    assert_eq!(defs.len(), 6);
+    assert_eq!(defs.len(), 8);
 
     let decimal = expect_const_value(&defs, "DECIMAL_TWELVE");
     assert!(matches!(
@@ -384,6 +409,12 @@ fn parses_integer_literal_bases() {
         expect_integer(negative_hex, -42).base,
         IntegerBase::Hexadecimal
     ));
+
+    let binary_mask = expect_const_value(&defs, "BINARY_MASK");
+    expect_binary(binary_mask, 0b10100101, "10100101");
+
+    let negative_binary = expect_const_value(&defs, "NEGATIVE_BINARY");
+    expect_binary(negative_binary, -0b1001, "1001");
 }
 
 #[test]
