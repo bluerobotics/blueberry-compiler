@@ -1,0 +1,10 @@
+[package]
+name = "blueberry-generator-python"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blueberry-ast = { path = "../../ast" }
+blueberry-codegen-core = { path = "../codegen-core" }
+quote = "1.0"
+proc-macro2 = "1.0"
