@@ -5,6 +5,6 @@ version = "0.1.0"
 
 [dependencies]
 blueberry-parser = { path = "../parser", version = "0.1.0" }
-blueberry-idl-generator = { path = "../generators/idl", version = "0.1.0" }
+blueberry-generator-idl = { path = "../generators/idl", version = "0.1.0" }
 blueberry-generator-rust = { path = "../generators/rust", version = "0.1.0" }
 clap = { version = "4.5", features = ["derive"] }
