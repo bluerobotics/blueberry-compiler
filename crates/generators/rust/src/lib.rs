@@ -40,6 +40,26 @@ impl RustGenerator {
         }
     }
 
+    fn doc_attributes(&self, comments: &[String]) -> Vec<TokenStream> {
+        comments
+            .iter()
+            .flat_map(|comment| {
+                if comment.is_empty() {
+                    vec![quote!(#[doc = ""])]
+                } else {
+                    comment
+                        .lines()
+                        .map(|line| {
+                            let content = format!(" {}", line.trim_end());
+                            let text = Literal::string(&content);
+                            quote!(#[doc = #text])
+                        })
+                        .collect()
+                }
+            })
+            .collect()
+    }
+
     fn generate(&self, definitions: &[Definition]) -> TokenStream {
         let runtime = self.runtime_module();
         let defs = self.emit_definitions(definitions, &[]);
@@ -299,7 +319,9 @@ impl RustGenerator {
         new_scope.push(module.node.name.clone());
         let defs = self.emit_definitions(&module.node.definitions, &new_scope);
         let runtime_path = quote!(crate::blueberry_generated::runtime);
+        let docs = self.doc_attributes(&module.comments);
         quote! {
+            #(#docs)*
             pub mod #ident {
                 use #runtime_path;
                 #(#defs)*
@@ -311,7 +333,9 @@ impl RustGenerator {
         let name = format_ident!("{}", typedef.node.name);
         let resolved = self.registry.resolve_type(&typedef.node.base_type, scope);
         let ty = self.render_type(&resolved, scope);
+        let docs = self.doc_attributes(&typedef.comments);
         quote! {
+            #(#docs)*
             pub type #name = #ty;
         }
     }
@@ -331,15 +355,18 @@ impl RustGenerator {
             .enumerate()
             .map(|(idx, member)| {
                 let name = format_ident!("{}", member.name);
+                let docs = self.doc_attributes(&member.comments);
                 let default_attr = (idx == 0).then(|| quote!(#[default]));
                 if let Some(value) = &member.value {
                     let literal = self.render_const(value, scope);
                     quote! {
+                        #(#docs)*
                         #default_attr
                         #name = #literal,
                     }
                 } else {
                     quote! {
+                        #(#docs)*
                         #default_attr
                         #name,
                     }
@@ -354,7 +381,9 @@ impl RustGenerator {
                 .unwrap_or_else(|| quote!(Self::#name as #repr_ty));
             quote!(#literal => Ok(Self::#name),)
         });
+        let docs = self.doc_attributes(&enum_def.comments);
         quote! {
+            #(#docs)*
             #[repr(#repr_ty)]
             #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
             pub enum #ident {
@@ -388,7 +417,7 @@ impl RustGenerator {
         let mut path = scope.to_vec();
         path.push(struct_def.node.name.clone());
         let members = self.registry.collect_struct_members(&path);
-        self.emit_struct_like(&ident, &members, scope)
+        self.emit_struct_like(&ident, &members, &struct_def.comments, scope)
     }
 
     fn emit_message(&self, message_def: &Commented<MessageDef>, scope: &[String]) -> TokenStream {
@@ -396,20 +425,26 @@ impl RustGenerator {
         let mut path = scope.to_vec();
         path.push(message_def.node.name.clone());
         let members = self.registry.collect_message_members(&path);
-        self.emit_struct_like(&ident, &members, scope)
+        self.emit_struct_like(&ident, &members, &message_def.comments, scope)
     }
 
     fn emit_struct_like(
         &self,
         ident: &proc_macro2::Ident,
         members: &[ResolvedMember],
+        comments: &[String],
         scope: &[String],
     ) -> TokenStream {
         let fields = members.iter().map(|member| {
             let name = format_ident!("{}", member.name);
             let ty = self.render_type(&member.ty, scope);
-            quote!(pub #name: #ty,)
+            let docs = self.doc_attributes(&member.comments);
+            quote! {
+                #(#docs)*
+                pub #name: #ty,
+            }
         });
+        let docs = self.doc_attributes(comments);
 
         let writes = members.iter().map(|member| {
             let field = format_ident!("{}", member.name);
@@ -431,6 +466,7 @@ impl RustGenerator {
         });
 
         quote! {
+            #(#docs)*
             #[derive(Clone, Debug, PartialEq, Default)]
             pub struct #ident {
                 #(#fields)*
@@ -468,7 +504,9 @@ impl RustGenerator {
         if matches!(ty, Type::String { .. }) {
             ty_tokens = quote!(&'static str);
         }
+        let docs = self.doc_attributes(&const_def.comments);
         quote! {
+            #(#docs)*
             pub const #name: #ty_tokens = #value;
         }
     }
@@ -685,6 +723,7 @@ impl RustGenerator {
 struct ResolvedMember {
     name: String,
     ty: Type,
+    comments: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -835,6 +874,7 @@ impl TypeRegistry {
             members.push(ResolvedMember {
                 name: member.node.name.clone(),
                 ty,
+                comments: member.comments.clone(),
             });
         }
         members
@@ -856,6 +896,7 @@ impl TypeRegistry {
             members.push(ResolvedMember {
                 name: member.node.name.clone(),
                 ty,
+                comments: member.comments.clone(),
             });
         }
         members
@@ -970,5 +1011,54 @@ mod tests {
             tokens.to_string(),
             "crate :: blueberry_generated :: Blueberry :: HwType"
         );
+    }
+
+    #[test]
+    fn propagates_comments_into_generated_rust() {
+        let idl = r#"
+            // Telemetry data types
+            module Telemetry {
+                // Signed distance in meters
+                typedef long Distance;
+
+                // Detailed reading
+                struct Reading {
+                    // Unique identifier
+                    long id;
+                    // Travel distance
+                    Distance distance;
+                };
+
+                // Current mode
+                enum Mode {
+                    // Idle state
+                    IDLE = 0,
+                    // Active state
+                    ACTIVE = 1,
+                };
+
+                // Maximum allowed count
+                const long MAX_COUNT = 5;
+            };
+        "#;
+
+        let definitions = parse_idl(idl).expect("input parses");
+        let rust = generate_rust(&definitions);
+        for expected in [
+            "/// Telemetry data types",
+            "/// Signed distance in meters",
+            "/// Detailed reading",
+            "/// Unique identifier",
+            "/// Travel distance",
+            "/// Current mode",
+            "/// Idle state",
+            "/// Active state",
+            "/// Maximum allowed count",
+        ] {
+            assert!(
+                rust.contains(expected),
+                "missing expected doc attribute {expected}"
+            );
+        }
     }
 }
