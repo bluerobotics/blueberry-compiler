@@ -63,29 +63,21 @@
             opacity: 0.7;
             font-weight: 400;
         }
-        .output-tabs {
-            display: flex;
-            gap: 0.35rem;
+        .output-picker {
+            display: inline-flex;
             align-items: center;
-            flex-wrap: wrap;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            opacity: 0.9;
         }
-        .output-tab-button {
-            background: transparent;
-            border: 1px solid #30363d;
+        .output-picker select {
+            background: #161b22;
             color: #f0f6fc;
-            border-radius: 999px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
             padding: 0.25rem 0.75rem;
-            font-size: 0.8rem;
-            cursor: pointer;
-            transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-        }
-        .output-tab-button.active {
-            background: #238636;
-            border-color: #238636;
-        }
-        .output-tab-button:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
+            font-size: 0.85rem;
+            min-width: 160px;
         }
         .pane-body {
             flex: 1;
@@ -118,6 +110,12 @@
         }
         .pane-controls select:disabled {
             opacity: 0.6;
+        }
+        .pane-controls .inline-actions {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         .pane-controls button {
             background: #238636;
@@ -239,24 +237,25 @@
                     <div>Generated Output</div>
                     <span>Round-tripped IDL or language-specific code</span>
                 </div>
-                <div class="output-tabs">
-                    <button class="output-tab-button active" data-output-tab="idl" type="button">IDL</button>
-                    <button class="output-tab-button" data-output-tab="rust" type="button">Rust</button>
-                    <button class="output-tab-button" data-output-tab="python" type="button">Python</button>
-                    <button class="output-tab-button" data-output-tab="c" type="button">C</button>
-                    <button class="output-tab-button" data-output-tab="cpp" type="button">C++</button>
+                <div class="output-picker">
+                    <label for="output-tab-select">Generator:</label>
+                    <select id="output-tab-select">
+                        <option value="idl">IDL</option>
+                        <option value="rust">Rust</option>
+                        <option value="python">Python</option>
+                        <option value="c">C</option>
+                        <option value="cpp">C++</option>
+                    </select>
                 </div>
             </header>
             <div class="pane-body">
                 <div class="pane-controls">
-                    <label for="generation-select">Base output:</label>
-                    <select id="generation-select">
-                        <option value="idl">IDL</option>
-                    </select>
-                    <button type="button" id="copy-generated-btn">Copy output</button>
-                    <span id="copy-status" class="copy-status" aria-live="polite"></span>
+                    <div class="output-info" id="output-info">Round-tripped IDL</div>
+                    <div class="inline-actions">
+                        <button type="button" id="copy-generated-btn">Copy output</button>
+                        <span id="copy-status" class="copy-status" aria-live="polite"></span>
+                    </div>
                 </div>
-                <div class="output-info" id="output-info">Round-tripped IDL</div>
                 <textarea id="generated-output" spellcheck="false"></textarea>
             </div>
         </section>
@@ -265,6 +264,8 @@
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/mode/simple.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.min.js"></script>
     <script type="module">
         import init, { analyze_idl_wasm } from "./blueberry_wasm.js";
 
@@ -272,7 +273,7 @@
         const parserOutputEl = document.getElementById("parser-output");
         const generatedTextarea = document.getElementById("generated-output");
         const fixtureSelect = document.getElementById("fixture-select");
-        const generationSelect = document.getElementById("generation-select");
+        const outputTabSelect = document.getElementById("output-tab-select");
         const fixtureMessageEl = document.getElementById("fixture-message");
         const copyButton = document.getElementById("copy-generated-btn");
         const copyStatusEl = document.getElementById("copy-status");
@@ -280,7 +281,7 @@
         const OUTPUT_TABS = {
             idl: { label: "IDL", mode: "text/x-csrc", commentPrefix: "//" },
             rust: { label: "Rust", mode: "text/x-rustsrc", commentPrefix: "//" },
-            python: { label: "Python", mode: "text/x-python", commentPrefix: "#" },
+            python: { label: "Python", mode: "python", commentPrefix: "#" },
             c: { label: "C", mode: "text/x-csrc", commentPrefix: "//" },
             cpp: { label: "C++", mode: "text/x-c++src", commentPrefix: "//" },
         };
@@ -290,7 +291,6 @@
             outputState[key] = { content: "", hasError: false, info: "" };
         });
         let currentOutputTab = "idl";
-        const outputTabButtons = Array.from(document.querySelectorAll("[data-output-tab]"));
         let generatedEditor;
         let inputEditor;
         let currentErrorMarker = null;
@@ -416,21 +416,21 @@
             });
         }
 
-        function updateOutputTabActiveState() {
-            outputTabButtons.forEach((button) => {
-                const tabId = button.dataset.outputTab;
-                button.classList.toggle("active", tabId === currentOutputTab);
-            });
+        function updateOutputSelectState() {
+            if (outputTabSelect) {
+                outputTabSelect.value = currentOutputTab;
+            }
         }
 
         function applyOutputToEditor() {
-            updateOutputTabActiveState();
+            updateOutputSelectState();
             const config = OUTPUT_TABS[currentOutputTab] ?? OUTPUT_TABS.idl;
             const state = outputState[currentOutputTab] ?? { content: "", hasError: false, info: "" };
             const content = typeof state.content === "string" ? state.content : "";
             if (generatedEditor) {
                 generatedEditor.setOption("mode", config.mode ?? "text/x-csrc");
                 generatedEditor.setValue(content);
+                generatedEditor.refresh();
                 const wrapper = generatedEditor.getWrapperElement();
                 if (wrapper) {
                     wrapper.classList.toggle("error", Boolean(state.hasError));
@@ -452,14 +452,12 @@
             applyOutputToEditor();
         }
 
-        outputTabButtons.forEach((button) => {
-            button.addEventListener("click", () => {
-                const tabId = button.dataset.outputTab;
-                if (tabId) {
-                    setOutputTab(tabId);
-                }
+        if (outputTabSelect) {
+            outputTabSelect.addEventListener("change", (event) => {
+                const tabId = event.target.value;
+                setOutputTab(tabId);
             });
-        });
+        }
 
         function extractErrorOffsets(errorMessage) {
             if (typeof errorMessage !== "string") {
@@ -629,8 +627,7 @@
         function renderResult(text) {
             clearEditorErrorHighlight();
             try {
-                const mode = generationSelect?.value ?? "idl";
-                const result = analyze_idl_wasm(text, mode);
+                const result = analyze_idl_wasm(text, "idl");
                 const errorMessage = typeof result.error === "string" ? result.error : null;
                 const hasError = Boolean(errorMessage);
                 parserOutputEl.textContent = result.ast ?? "";
@@ -661,14 +658,6 @@
                 fillOutputStatesForFailure(runtimeMessage);
                 applyOutputToEditor();
             }
-        }
-
-        if (generationSelect) {
-            generationSelect.addEventListener("change", () => {
-                if (inputEditor && !isProgrammaticEditorChange) {
-                    renderResult(inputEditor.getValue());
-                }
-            });
         }
 
         async function writeToClipboard(text) {
