@@ -44,7 +44,7 @@ impl MessageSpec {
 
     pub fn padded_payload_size(&self) -> usize {
         let size = self.field_payload_size();
-        if size == 0 { 0 } else { ((size + 3) / 4) * 4 }
+        size.div_ceil(4) * 4
     }
 
     pub fn payload_words(&self) -> usize {
@@ -230,11 +230,15 @@ fn annotation_value<'a>(annotations: &'a [Annotation], name: &str) -> Option<&'a
         .iter()
         .find(|annotation| annotation_name_matches(annotation, name))?;
 
-    annotation.params.iter().find_map(|param| match param {
-        AnnotationParam::Named { name, value } if name.eq_ignore_ascii_case("value") => Some(value),
-        AnnotationParam::Positional(value) => Some(value),
-        AnnotationParam::Named { value, .. } => Some(value),
-    })
+    annotation
+        .params
+        .iter()
+        .map(|param| match param {
+            AnnotationParam::Named { name, value } if name.eq_ignore_ascii_case("value") => value,
+            AnnotationParam::Positional(value) => value,
+            AnnotationParam::Named { value, .. } => value,
+        })
+        .next()
 }
 
 fn annotation_name_matches(annotation: &Annotation, expected: &str) -> bool {
@@ -383,6 +387,12 @@ pub enum TopicPlaceholder {
 
 pub struct SourceWriter {
     buffer: String,
+}
+
+impl Default for SourceWriter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SourceWriter {

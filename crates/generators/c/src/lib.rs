@@ -82,7 +82,7 @@ fn render_message(writer: &mut SourceWriter, message: &MessageSpec) {
     writer.push_str(&format!(
         "#define {upper}_TOPIC_FMT {literal}\n",
         upper = upper,
-        literal = topic_literal.to_string(),
+        literal = topic_literal,
     ));
     writer.newline();
 
