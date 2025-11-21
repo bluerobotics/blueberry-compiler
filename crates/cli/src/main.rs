@@ -1,4 +1,8 @@
+use blueberry_codegen_core::{CodegenError, GeneratedFile};
+use blueberry_generator_c as generator_c;
+use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
+use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
 use blueberry_parser::parse_idl;
 use clap::Parser;
@@ -43,6 +47,24 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
         println!("\n// generated Rust module\n{generated}");
     }
 
+    if options.emit_c {
+        let files =
+            generator_c::generate(&definitions).map_err(|err| fmt_codegen_error("C", err))?;
+        print_generated_files("C", &files);
+    }
+
+    if options.emit_cpp {
+        let files =
+            generator_cpp::generate(&definitions).map_err(|err| fmt_codegen_error("C++", err))?;
+        print_generated_files("C++", &files);
+    }
+
+    if options.emit_python {
+        let files = generator_python::generate(&definitions)
+            .map_err(|err| fmt_codegen_error("Python", err))?;
+        print_generated_files("Python", &files);
+    }
+
     Ok(())
 }
 
@@ -64,6 +86,18 @@ struct CliOptions {
     /// Emit generated Rust bindings to stdout.
     #[arg(long)]
     emit_rust: bool,
+
+    /// Emit generated C bindings to stdout.
+    #[arg(long)]
+    emit_c: bool,
+
+    /// Emit generated C++ bindings to stdout.
+    #[arg(long)]
+    emit_cpp: bool,
+
+    /// Emit generated Python bindings to stdout.
+    #[arg(long)]
+    emit_python: bool,
 }
 
 #[derive(Debug)]
@@ -93,3 +127,34 @@ impl fmt::Display for ParseFailure {
 }
 
 impl Error for ParseFailure {}
+
+fn fmt_codegen_error(language: &str, err: CodegenError) -> Box<dyn Error> {
+    let message = match err {
+        CodegenError::MissingTopic { message } => {
+            format!("{language} generation failed: missing @topic for message {message}")
+        }
+        CodegenError::UnsupportedMessageBase { message } => format!(
+            "{language} generation failed: message {message} uses inheritance which is unsupported"
+        ),
+        CodegenError::UnsupportedMemberType {
+            message,
+            member,
+            type_name,
+        } => format!(
+            "{language} generation failed: member {member} in {message} uses unsupported type {type_name}"
+        ),
+    };
+    message.into()
+}
+
+fn print_generated_files(language: &str, files: &[GeneratedFile]) {
+    if files.is_empty() {
+        println!("\n// generated {language} files: none");
+        return;
+    }
+    println!("\n// generated {language} files");
+    for file in files {
+        println!("\n// File: {}", file.path);
+        println!("{}", file.contents);
+    }
+}
