@@ -342,6 +342,7 @@ impl RustGenerator {
 
     fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> TokenStream {
         let ident = format_ident!("{}", enum_def.node.name);
+        let serde_attr = self.serde_attr();
         let repr_ty = enum_def
             .node
             .base_type
@@ -384,6 +385,7 @@ impl RustGenerator {
         let docs = self.doc_attributes(&enum_def.comments);
         quote! {
             #(#docs)*
+            #serde_attr
             #[repr(#repr_ty)]
             #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
             pub enum #ident {
@@ -435,6 +437,7 @@ impl RustGenerator {
         comments: &[String],
         scope: &[String],
     ) -> TokenStream {
+        let serde_attr = self.serde_attr();
         let fields = members.iter().map(|member| {
             let name = format_ident!("{}", member.name);
             let ty = self.render_type(&member.ty, scope);
@@ -467,6 +470,7 @@ impl RustGenerator {
 
         quote! {
             #(#docs)*
+            #serde_attr
             #[derive(Clone, Debug, PartialEq, Default)]
             pub struct #ident {
                 #(#fields)*
@@ -671,6 +675,13 @@ impl RustGenerator {
                 quote!((#lhs #op_token #rhs))
             }
         }
+    }
+
+    fn serde_attr(&self) -> Option<TokenStream> {
+        Some(quote!(#[cfg_attr(
+            feature = "serde",
+            derive(::serde::Serialize, ::serde::Deserialize)
+        )]))
     }
 
     fn bound_tokens(&self, bound: Option<u32>) -> TokenStream {
