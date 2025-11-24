@@ -13,22 +13,31 @@ fn compile_fixture(relative_path: &str) {
 
     let contents = fs::read_to_string(&fixture_path).expect("failed to read example IDL fixture");
     let definitions = parse_idl(&contents).expect("failed to parse example IDL");
-    let generated_rust = generate_rust(&definitions);
+    let files = generate_rust(&definitions).expect("generation should succeed");
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let source_path = temp_dir.path().join("generated.rs");
-    fs::write(&source_path, &generated_rust).expect("failed to write generated rust file");
+    for file in &files {
+        let path = temp_dir.path().join(&file.path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("failed to create directories for generated output");
+        }
+        fs::write(&path, &file.contents).expect("failed to write generated rust file");
+    }
+    let source_path = temp_dir.path().join("rust").join("blueberry_generated.rs");
+    assert!(
+        source_path.exists(),
+        "root generated file should exist at {}",
+        source_path.display()
+    );
     if let Ok(dir) = std::env::var("BLUEBERRY_DUMP_GENERATED") {
-        let mut file_name = relative_path.replace('/', "_");
-        if !file_name.ends_with(".rs") {
-            file_name.push_str(".rs");
+        for file in &files {
+            let dump_path = PathBuf::from(&dir).join(file.path.clone());
+            if let Some(parent) = dump_path.parent() {
+                fs::create_dir_all(parent).expect("failed to create dump directory");
+            }
+            fs::write(&dump_path, &file.contents).expect("failed to dump generated rust");
+            eprintln!("Wrote generated output to {}", dump_path.display());
         }
-        let dump_path = PathBuf::from(dir).join(file_name);
-        if let Some(parent) = dump_path.parent() {
-            fs::create_dir_all(parent).expect("failed to create dump directory");
-        }
-        fs::write(&dump_path, &generated_rust).expect("failed to dump generated rust");
-        eprintln!("Wrote generated output to {}", dump_path.display());
     }
     let output_path = temp_dir.path().join("generated.rlib");
 

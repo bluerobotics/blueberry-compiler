@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 blueberry-ast = { path = "../../ast" }
+blueberry-codegen-core = { path = "../codegen-core" }
 proc-macro2 = "1.0"
 quote = "1.0"
 prettyplease = "0.2"
