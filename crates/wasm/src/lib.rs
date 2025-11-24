@@ -33,7 +33,8 @@ pub fn analyze_idl_wasm(input: &str, mode: &str) -> JsValue {
         Ok(defs) => {
             let ast = format!("{:#?}", defs);
             let generated = match mode {
-                "rust" => generate_rust(&defs),
+                "rust" => "Rust generation emits files; see the codegen.rust entry for results"
+                    .to_string(),
                 _ => generate_idl(&defs),
             };
             let codegen = build_codegen_object(&defs);
@@ -70,7 +71,7 @@ fn build_codegen_object(defs: &[Definition]) -> JsValue {
         ("python", python_generator::generate),
         ("c", c_generator::generate),
         ("cpp", cpp_generator::generate),
-        ("rust", generate_rust_files),
+        ("rust", generate_rust),
     ];
 
     let codegen = Object::new();
@@ -107,15 +108,6 @@ fn files_to_js_array(files: &[GeneratedFile]) -> Array {
         array.push(&file_obj.into());
     }
     array
-}
-
-fn generate_rust_files(defs: &[Definition]) -> Result<Vec<GeneratedFile>, CodegenError> {
-    const OUTPUT_PATH: &str = "rust/blueberry_generated.rs";
-    let contents = generate_rust(defs);
-    Ok(vec![GeneratedFile {
-        path: OUTPUT_PATH.to_string(),
-        contents,
-    }])
 }
 
 fn describe_codegen_error(err: &CodegenError) -> String {
