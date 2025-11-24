@@ -2,6 +2,7 @@ use blueberry_ast::{
     Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef, ModuleDef, StructDef, Type,
     TypeDef,
 };
+use blueberry_codegen_core::{CodegenError, GeneratedFile};
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use std::{
@@ -10,17 +11,32 @@ use std::{
     path::Path,
 };
 
+const OUTPUT_PATH: &str = "rust/blueberry_generated.rs";
+const RUNTIME_PATH: &str = "rust/blueberry_generated/runtime.rs";
+
 /// Generate Rust code for the provided IDL definitions.
-pub fn generate_rust(definitions: &[Definition]) -> String {
+pub fn generate_rust(definitions: &[Definition]) -> Result<Vec<GeneratedFile>, CodegenError> {
     let generator = RustGenerator::new(definitions);
-    let tokens = generator.generate(definitions);
-    let file: syn::File = syn::parse2(tokens).expect("generated Rust should be valid");
-    prettyplease::unparse(&file)
+    let root_file = generator.generate_root(definitions);
+    let runtime_file = generator.generate_runtime();
+    Ok(vec![
+        GeneratedFile {
+            path: OUTPUT_PATH.to_string(),
+            contents: root_file,
+        },
+        GeneratedFile {
+            path: RUNTIME_PATH.to_string(),
+            contents: runtime_file,
+        },
+    ])
 }
 
-/// Write the generated Rust module to disk.
+/// Write the root generated Rust module to disk.
+///
+/// Note: the Rust generator now emits multiple files. This helper writes only the
+/// top-level module; use `generate_rust` to retrieve all files and persist them as needed.
 pub fn write_rust_file<P: AsRef<Path>>(definitions: &[Definition], path: P) -> io::Result<()> {
-    let contents = generate_rust(definitions);
+    let contents = RustGenerator::new(definitions).generate_root(definitions);
     if let Some(parent) = path.as_ref().parent()
         && !parent.as_os_str().is_empty()
     {
@@ -60,13 +76,24 @@ impl RustGenerator {
             .collect()
     }
 
-    fn generate(&self, definitions: &[Definition]) -> TokenStream {
-        let runtime = self.runtime_module();
+    fn generate_root(&self, definitions: &[Definition]) -> String {
+        let tokens = self.generate_root_tokens(definitions);
+        let file: syn::File = syn::parse2(tokens).expect("generated Rust should be valid");
+        prettyplease::unparse(&file)
+    }
+
+    fn generate_runtime(&self) -> String {
+        let tokens = self.runtime_module_items();
+        let file: syn::File = syn::parse2(tokens).expect("generated runtime should be valid");
+        prettyplease::unparse(&file)
+    }
+
+    fn generate_root_tokens(&self, definitions: &[Definition]) -> TokenStream {
         let defs = self.emit_definitions(definitions, &[]);
         let tests = self.emit_tests(definitions);
         quote! {
             pub mod blueberry_generated {
-                #runtime
+                pub mod runtime;
                 pub use runtime::BinarySerializable;
                 #(#defs)*
             }
@@ -122,7 +149,7 @@ impl RustGenerator {
         }
     }
 
-    fn runtime_module(&self) -> TokenStream {
+    fn runtime_module_items(&self) -> TokenStream {
         let numeric_helpers: Vec<TokenStream> = [
             ("i16", quote!(write_i16), quote!(read_i16)),
             ("u16", quote!(write_u16), quote!(read_u16)),
@@ -153,148 +180,146 @@ impl RustGenerator {
         .collect();
 
         quote! {
-            pub mod runtime {
-                use std::io::{Cursor, Read};
+            use std::io::{Cursor, Read};
 
-                #[derive(Debug)]
-                pub enum Error {
-                    UnexpectedEof,
-                    InvalidUtf8,
-                    StringTooLong { limit: usize, actual: usize },
-                    SequenceTooLong { limit: usize, actual: usize },
-                    InvalidEnum { name: &'static str, value: i64 },
+            #[derive(Debug)]
+            pub enum Error {
+                UnexpectedEof,
+                InvalidUtf8,
+                StringTooLong { limit: usize, actual: usize },
+                SequenceTooLong { limit: usize, actual: usize },
+                InvalidEnum { name: &'static str, value: i64 },
+            }
+
+            pub trait BinarySerializable: Sized {
+                fn serialize(&self) -> Result<Vec<u8>, Error> {
+                    let mut buf = Vec::new();
+                    self.write_into(&mut buf)?;
+                    Ok(buf)
                 }
 
-                pub trait BinarySerializable: Sized {
-                    fn serialize(&self) -> Result<Vec<u8>, Error> {
-                        let mut buf = Vec::new();
-                        self.write_into(&mut buf)?;
-                        Ok(buf)
+                fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
+
+                fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+                    let mut cursor = Cursor::new(bytes);
+                    Self::read_from(&mut cursor)
+                }
+
+                fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
+            }
+
+            pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
+                buf.push(if value { 1 } else { 0 });
+            }
+
+            pub fn read_bool(
+                cursor: &mut Cursor<&[u8]>,
+            ) -> Result<bool, Error> {
+                let mut byte = [0u8; 1];
+                cursor
+                    .read_exact(&mut byte)
+                    .map_err(|_| Error::UnexpectedEof)?;
+                Ok(byte[0] != 0)
+            }
+
+            pub fn write_u8(buf: &mut Vec<u8>, value: u8) {
+                buf.push(value);
+            }
+
+            pub fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, Error> {
+                let mut byte = [0u8; 1];
+                cursor
+                    .read_exact(&mut byte)
+                    .map_err(|_| Error::UnexpectedEof)?;
+                Ok(byte[0])
+            }
+
+            #(#numeric_helpers)*
+
+            pub fn write_string(
+                buf: &mut Vec<u8>,
+                value: &str,
+                bound: Option<usize>,
+            ) -> Result<(), Error> {
+                if let Some(limit) = bound {
+                    if value.len() > limit {
+                        return Err(Error::StringTooLong {
+                            limit,
+                            actual: value.len(),
+                        });
                     }
+                }
+                write_u32(buf, value.len() as u32);
+                buf.extend_from_slice(value.as_bytes());
+                Ok(())
+            }
 
-                    fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
-
-                    fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-                        let mut cursor = Cursor::new(bytes);
-                        Self::read_from(&mut cursor)
+            pub fn read_string(
+                cursor: &mut std::io::Cursor<&[u8]>,
+                bound: Option<usize>,
+            ) -> Result<String, Error> {
+                let len = read_u32(cursor)? as usize;
+                if let Some(limit) = bound {
+                    if len > limit {
+                        return Err(Error::StringTooLong {
+                            limit,
+                            actual: len,
+                        });
                     }
-
-                    fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
                 }
+                let mut data = vec![0u8; len];
+                cursor
+                    .read_exact(&mut data)
+                    .map_err(|_| Error::UnexpectedEof)?;
+                String::from_utf8(data).map_err(|_| Error::InvalidUtf8)
+            }
 
-                pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
-                    buf.push(if value { 1 } else { 0 });
-                }
-
-                pub fn read_bool(
-                    cursor: &mut Cursor<&[u8]>,
-                ) -> Result<bool, Error> {
-                    let mut byte = [0u8; 1];
-                    cursor
-                        .read_exact(&mut byte)
-                        .map_err(|_| Error::UnexpectedEof)?;
-                    Ok(byte[0] != 0)
-                }
-
-                pub fn write_u8(buf: &mut Vec<u8>, value: u8) {
-                    buf.push(value);
-                }
-
-                pub fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, Error> {
-                    let mut byte = [0u8; 1];
-                    cursor
-                        .read_exact(&mut byte)
-                        .map_err(|_| Error::UnexpectedEof)?;
-                    Ok(byte[0])
-                }
-
-                #(#numeric_helpers)*
-
-                pub fn write_string(
-                    buf: &mut Vec<u8>,
-                    value: &str,
-                    bound: Option<usize>,
-                ) -> Result<(), Error> {
-                    if let Some(limit) = bound {
-                        if value.len() > limit {
-                            return Err(Error::StringTooLong {
-                                limit,
-                                actual: value.len(),
-                            });
-                        }
+            pub fn write_vec<T, F>(
+                buf: &mut Vec<u8>,
+                values: &[T],
+                bound: Option<usize>,
+                mut serializer: F,
+            ) -> Result<(), Error>
+            where
+                F: FnMut(&T, &mut Vec<u8>) -> Result<(), Error>,
+            {
+                if let Some(limit) = bound {
+                    if values.len() > limit {
+                        return Err(Error::SequenceTooLong {
+                            limit,
+                            actual: values.len(),
+                        });
                     }
-                    write_u32(buf, value.len() as u32);
-                    buf.extend_from_slice(value.as_bytes());
-                    Ok(())
                 }
+                write_u32(buf, values.len() as u32);
+                for value in values {
+                    serializer(value, buf)?;
+                }
+                Ok(())
+            }
 
-                pub fn read_string(
-                    cursor: &mut std::io::Cursor<&[u8]>,
-                    bound: Option<usize>,
-                ) -> Result<String, Error> {
-                    let len = read_u32(cursor)? as usize;
-                    if let Some(limit) = bound {
-                        if len > limit {
-                            return Err(Error::StringTooLong {
-                                limit,
-                                actual: len,
-                            });
-                        }
+            pub fn read_vec<T, F>(
+                cursor: &mut std::io::Cursor<&[u8]>,
+                bound: Option<usize>,
+                mut parser: F,
+            ) -> Result<Vec<T>, Error>
+            where
+                F: FnMut(&mut std::io::Cursor<&[u8]>) -> Result<T, Error>,
+            {
+                let len = read_u32(cursor)? as usize;
+                if let Some(limit) = bound {
+                    if len > limit {
+                        return Err(Error::SequenceTooLong {
+                            limit,
+                            actual: len,
+                        });
                     }
-                    let mut data = vec![0u8; len];
-                    cursor
-                        .read_exact(&mut data)
-                        .map_err(|_| Error::UnexpectedEof)?;
-                    String::from_utf8(data).map_err(|_| Error::InvalidUtf8)
                 }
-
-                pub fn write_vec<T, F>(
-                    buf: &mut Vec<u8>,
-                    values: &[T],
-                    bound: Option<usize>,
-                    mut serializer: F,
-                ) -> Result<(), Error>
-                where
-                    F: FnMut(&T, &mut Vec<u8>) -> Result<(), Error>,
-                {
-                    if let Some(limit) = bound {
-                        if values.len() > limit {
-                            return Err(Error::SequenceTooLong {
-                                limit,
-                                actual: values.len(),
-                            });
-                        }
-                    }
-                    write_u32(buf, values.len() as u32);
-                    for value in values {
-                        serializer(value, buf)?;
-                    }
-                    Ok(())
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(parser(cursor)?);
                 }
-
-                pub fn read_vec<T, F>(
-                    cursor: &mut std::io::Cursor<&[u8]>,
-                    bound: Option<usize>,
-                    mut parser: F,
-                ) -> Result<Vec<T>, Error>
-                where
-                    F: FnMut(&mut std::io::Cursor<&[u8]>) -> Result<T, Error>,
-                {
-                    let len = read_u32(cursor)? as usize;
-                    if let Some(limit) = bound {
-                        if len > limit {
-                            return Err(Error::SequenceTooLong {
-                                limit,
-                                actual: len,
-                            });
-                        }
-                    }
-                    let mut items = Vec::with_capacity(len);
-                    for _ in 0..len {
-                        items.push(parser(cursor)?);
-                    }
-                    Ok(items)
-                }
+                Ok(items)
             }
         }
     }
@@ -1054,7 +1079,13 @@ mod tests {
         "#;
 
         let definitions = parse_idl(idl).expect("input parses");
-        let rust = generate_rust(&definitions);
+        let files = generate_rust(&definitions).expect("generation succeeds");
+        let rust = files
+            .iter()
+            .find(|file| file.path == OUTPUT_PATH)
+            .or_else(|| files.first())
+            .map(|file| file.contents.clone())
+            .expect("root file exists");
         for expected in [
             "/// Telemetry data types",
             "/// Signed distance in meters",
