@@ -139,6 +139,38 @@
             font-size: 0.8rem;
             opacity: 0.7;
         }
+        .file-tabs {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 1rem;
+            border-bottom: 1px solid #30363d;
+            background: #0f1622;
+            overflow-x: auto;
+        }
+        .file-tab {
+            border: 1px solid #30363d;
+            background: #161b22;
+            color: #f0f6fc;
+            padding: 0.3rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+        .file-tab:hover {
+            background: #1f2933;
+        }
+        .file-tab.active {
+            background: #238636;
+            border-color: #2ea043;
+            color: #fff;
+        }
+        .download-status {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
         .output-info {
             padding: 0.5rem 1rem;
             border-bottom: 1px solid #30363d;
@@ -252,10 +284,13 @@
                 <div class="pane-controls">
                     <div class="output-info" id="output-info">Round-tripped IDL</div>
                     <div class="inline-actions">
+                        <button type="button" id="download-zip-btn">Download ZIP</button>
                         <button type="button" id="copy-generated-btn">Copy output</button>
                         <span id="copy-status" class="copy-status" aria-live="polite"></span>
+                        <span id="download-status" class="download-status" aria-live="polite"></span>
                     </div>
                 </div>
+                <div class="file-tabs" id="file-tabs"></div>
                 <textarea id="generated-output" spellcheck="false"></textarea>
             </div>
         </section>
@@ -266,6 +301,7 @@
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/mode/simple.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script type="module">
         import init, { analyze_idl_wasm } from "./blueberry_wasm.js";
 
@@ -276,8 +312,11 @@
         const outputTabSelect = document.getElementById("output-tab-select");
         const fixtureMessageEl = document.getElementById("fixture-message");
         const copyButton = document.getElementById("copy-generated-btn");
+        const downloadButton = document.getElementById("download-zip-btn");
         const copyStatusEl = document.getElementById("copy-status");
+        const downloadStatusEl = document.getElementById("download-status");
         const outputInfoEl = document.getElementById("output-info");
+        const fileTabsContainer = document.getElementById("file-tabs");
         const OUTPUT_TABS = {
             idl: { label: "IDL", mode: "text/x-csrc", commentPrefix: "//" },
             rust: { label: "Rust", mode: "text/x-rustsrc", commentPrefix: "//" },
@@ -288,7 +327,7 @@
         const LANGUAGE_TABS = ["rust", "python", "c", "cpp"];
         const outputState = {};
         Object.keys(OUTPUT_TABS).forEach((key) => {
-            outputState[key] = { content: "", hasError: false, info: "" };
+            outputState[key] = { files: [], hasError: false, info: "", activePath: null, message: "" };
         });
         let currentOutputTab = "idl";
         let generatedEditor;
@@ -311,12 +350,34 @@
 
         function updateOutputState(tabId, state) {
             if (!outputState[tabId]) {
-                outputState[tabId] = { content: "", hasError: false, info: "" };
+                outputState[tabId] = { files: [], hasError: false, info: "", activePath: null, message: "" };
             }
             const target = outputState[tabId];
-            target.content = typeof state.content === "string" ? state.content : "";
-            target.hasError = Boolean(state.hasError);
-            target.info = typeof state.info === "string" ? state.info : "";
+            if (Array.isArray(state.files)) {
+                target.files = state.files;
+            }
+            if (typeof state.message === "string") {
+                target.message = state.message;
+            }
+            if (typeof state.hasError === "boolean") {
+                target.hasError = state.hasError;
+            } else if (state.hasError !== undefined) {
+                target.hasError = Boolean(state.hasError);
+            }
+            if (typeof state.info === "string") {
+                target.info = state.info;
+            }
+            const providedPath = typeof state.activePath === "string" ? state.activePath : null;
+            if (target.files.length === 0) {
+                target.activePath = null;
+            } else if (
+                providedPath &&
+                target.files.some((file) => file.path === providedPath)
+            ) {
+                target.activePath = providedPath;
+            } else if (!target.activePath || !target.files.some((file) => file.path === target.activePath)) {
+                target.activePath = target.files[0].path;
+            }
         }
 
         function normalizeFiles(rawFiles) {
@@ -338,22 +399,6 @@
                 .filter(Boolean);
         }
 
-        function formatGeneratedFiles(tabId, files) {
-            if (!Array.isArray(files) || files.length === 0) {
-                return "";
-            }
-            const config = OUTPUT_TABS[tabId] ?? {};
-            const prefix = typeof config.commentPrefix === "string" ? config.commentPrefix : "";
-            return files
-                .map((file) => {
-                    const header = file.path
-                        ? `${prefix ? `${prefix} ` : ""}File: ${file.path}`
-                        : "";
-                    return header ? `${header}\n${file.contents ?? ""}` : file.contents ?? "";
-                })
-                .join("\n\n");
-        }
-
         function describeFilesInfo(files) {
             if (!files.length) {
                 return "No files generated";
@@ -364,18 +409,29 @@
             return `${files.length} files generated`;
         }
 
+        function getActiveFile(tabId) {
+            const state = outputState[tabId];
+            if (!state || !Array.isArray(state.files) || state.files.length === 0) {
+                return null;
+            }
+            const byPath = state.files.find((file) => file.path === state.activePath);
+            return byPath || state.files[0];
+        }
+
         function fillOutputStatesForFailure(message) {
             const details =
                 typeof message === "string" && message.length > 0 ? message : "Unknown error";
             updateOutputState("idl", {
-                content: `Cannot generate IDL:\n${details}`,
+                files: [],
+                message: `Cannot generate IDL:\n${details}`,
                 hasError: true,
                 info: "IDL generation failed",
             });
             LANGUAGE_TABS.forEach((lang) => {
                 const label = OUTPUT_TABS[lang]?.label ?? lang.toUpperCase();
                 updateOutputState(lang, {
-                    content: `Cannot generate ${label} code:\n${details}`,
+                    files: [],
+                    message: `Cannot generate ${label} code:\n${details}`,
                     hasError: true,
                     info: `${label} generation failed`,
                 });
@@ -394,7 +450,8 @@
                 const files = normalizeFiles(langResult && langResult.files);
                 if (langError) {
                     updateOutputState(lang, {
-                        content: `Code generation error:\n${langError}`,
+                        files: [],
+                        message: `Code generation error:\n${langError}`,
                         hasError: true,
                         info: langError,
                     });
@@ -402,14 +459,17 @@
                 }
                 if (files.length === 0) {
                     updateOutputState(lang, {
-                        content: `No ${config.label} files were generated.`,
+                        files: [],
+                        message: `No ${config.label} files were generated.`,
                         hasError: false,
                         info: "No files generated",
                     });
                     return;
                 }
                 updateOutputState(lang, {
-                    content: formatGeneratedFiles(lang, files),
+                    files,
+                    activePath: files[0]?.path ?? null,
+                    message: "",
                     hasError: false,
                     info: describeFilesInfo(files),
                 });
@@ -422,11 +482,46 @@
             }
         }
 
+        function renderFileTabs() {
+            if (!fileTabsContainer) {
+                return;
+            }
+            const state = outputState[currentOutputTab] ?? {
+                files: [],
+                activePath: null,
+                message: "",
+            };
+            fileTabsContainer.innerHTML = "";
+            if (!state.files || state.files.length === 0) {
+                const placeholder = document.createElement("span");
+                placeholder.textContent = state.message
+                    ? "No files generated"
+                    : "Awaiting generator output";
+                placeholder.style.opacity = "0.7";
+                fileTabsContainer.appendChild(placeholder);
+                return;
+            }
+            state.files.forEach((file, index) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `file-tab${file.path === state.activePath ? " active" : ""}`;
+                button.textContent = file.path || `File ${index + 1}`;
+                button.addEventListener("click", () => {
+                    updateOutputState(currentOutputTab, { activePath: file.path });
+                    applyOutputToEditor();
+                });
+                fileTabsContainer.appendChild(button);
+            });
+        }
+
         function applyOutputToEditor() {
             updateOutputSelectState();
             const config = OUTPUT_TABS[currentOutputTab] ?? OUTPUT_TABS.idl;
-            const state = outputState[currentOutputTab] ?? { content: "", hasError: false, info: "" };
-            const content = typeof state.content === "string" ? state.content : "";
+            const state =
+                outputState[currentOutputTab] ??
+                { files: [], hasError: false, info: "", message: "", activePath: null };
+            const activeFile = getActiveFile(currentOutputTab);
+            const content = (activeFile && activeFile.contents) || state.message || "";
             if (generatedEditor) {
                 generatedEditor.setOption("mode", config.mode ?? "text/x-csrc");
                 generatedEditor.setValue(content);
@@ -442,6 +537,10 @@
             if (outputInfoEl) {
                 outputInfoEl.textContent = state.info ?? "";
             }
+            if (downloadButton) {
+                downloadButton.disabled = !state.files || state.files.length === 0;
+            }
+            renderFileTabs();
         }
 
         function setOutputTab(tabId) {
@@ -524,6 +623,21 @@
                     copyStatusEl.textContent = "";
                     copyStatusTimer = null;
                 }, 2000);
+            }
+        }
+
+        function setDownloadStatus(message, isError = false) {
+            if (!downloadStatusEl) {
+                return;
+            }
+            downloadStatusEl.textContent = message ?? "";
+            downloadStatusEl.style.color = isError ? "#ff7b72" : "#f0f6fc";
+            if (message) {
+                setTimeout(() => {
+                    if (downloadStatusEl.textContent === message) {
+                        downloadStatusEl.textContent = "";
+                    }
+                }, 2500);
             }
         }
 
@@ -641,9 +755,11 @@
                 } else {
                     const generated = typeof result.generated === "string" ? result.generated : "";
                     updateOutputState("idl", {
-                        content: generated,
+                        files: [{ path: "idl/normalized.idl", contents: generated }],
+                        activePath: "idl/normalized.idl",
                         hasError: false,
                         info: "Round-tripped IDL",
+                        message: "",
                     });
                     applyCodegenResults(result.codegen);
                 }
@@ -697,6 +813,47 @@
                     console.error("Failed to copy output", error);
                     setCopyStatus("Copy failed", true);
                 }
+            });
+        }
+
+        async function downloadZipForCurrentTab() {
+            const state = outputState[currentOutputTab];
+            if (!state || !Array.isArray(state.files) || state.files.length === 0) {
+                setDownloadStatus("No files to download", true);
+                return;
+            }
+            if (!window.JSZip) {
+                setDownloadStatus("ZIP support unavailable", true);
+                return;
+            }
+            try {
+                const zip = new JSZip();
+                state.files.forEach((file, index) => {
+                    const name =
+                        (file && typeof file.path === "string" && file.path.length > 0)
+                            ? file.path
+                            : `file_${index + 1}.txt`;
+                    zip.file(name, file.contents ?? "");
+                });
+                const blob = await zip.generateAsync({ type: "blob" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `blueberry_${currentOutputTab}.zip`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+                setDownloadStatus("Download started");
+            } catch (error) {
+                console.error("Failed to build ZIP", error);
+                setDownloadStatus("ZIP creation failed", true);
+            }
+        }
+
+        if (downloadButton) {
+            downloadButton.addEventListener("click", () => {
+                downloadZipForCurrentTab();
             });
         }
 
