@@ -43,8 +43,8 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
     }
 
     if options.emit_rust {
-        let generated = generate_rust(&definitions);
-        println!("\n// generated Rust module\n{generated}");
+        let files = generate_rust(&definitions).map_err(|err| fmt_codegen_error("Rust", err))?;
+        print_generated_files("Rust", &files);
     }
 
     if options.emit_c {
