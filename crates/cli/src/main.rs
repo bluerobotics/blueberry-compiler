@@ -42,27 +42,32 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
         println!("\n// normalized IDL output\n{generated}");
     }
 
+    let output_root = options
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+
     if options.emit_rust {
         let files = generate_rust(&definitions).map_err(|err| fmt_codegen_error("Rust", err))?;
-        print_generated_files("Rust", &files);
+        write_generated_files("Rust", &output_root, &files)?;
     }
 
     if options.emit_c {
         let files =
             generator_c::generate(&definitions).map_err(|err| fmt_codegen_error("C", err))?;
-        print_generated_files("C", &files);
+        write_generated_files("C", &output_root, &files)?;
     }
 
     if options.emit_cpp {
         let files =
             generator_cpp::generate(&definitions).map_err(|err| fmt_codegen_error("C++", err))?;
-        print_generated_files("C++", &files);
+        write_generated_files("C++", &output_root, &files)?;
     }
 
     if options.emit_python {
         let files = generator_python::generate(&definitions)
             .map_err(|err| fmt_codegen_error("Python", err))?;
-        print_generated_files("Python", &files);
+        write_generated_files("Python", &output_root, &files)?;
     }
 
     Ok(())
@@ -83,21 +88,25 @@ struct CliOptions {
     #[arg(long)]
     emit_idl: bool,
 
-    /// Emit generated Rust bindings to stdout.
+    /// Emit generated Rust bindings.
     #[arg(long)]
     emit_rust: bool,
 
-    /// Emit generated C bindings to stdout.
+    /// Emit generated C bindings.
     #[arg(long)]
     emit_c: bool,
 
-    /// Emit generated C++ bindings to stdout.
+    /// Emit generated C++ bindings.
     #[arg(long)]
     emit_cpp: bool,
 
-    /// Emit generated Python bindings to stdout.
+    /// Emit generated Python bindings.
     #[arg(long)]
     emit_python: bool,
+
+    /// Directory where generated files will be written. Defaults to the current directory.
+    #[arg(long, value_name = "OUTPUT_DIR")]
+    output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -147,14 +156,27 @@ fn fmt_codegen_error(language: &str, err: CodegenError) -> Box<dyn Error> {
     message.into()
 }
 
-fn print_generated_files(language: &str, files: &[GeneratedFile]) {
+fn write_generated_files(
+    language: &str,
+    output_root: &Path,
+    files: &[GeneratedFile],
+) -> Result<(), Box<dyn Error>> {
     if files.is_empty() {
         println!("\n// generated {language} files: none");
-        return;
+        return Ok(());
     }
-    println!("\n// generated {language} files");
+    println!(
+        "\n// writing generated {language} files under {}",
+        output_root.display()
+    );
     for file in files {
-        println!("\n// File: {}", file.path);
-        println!("{}", file.contents);
+        let path = output_root.join(&file.path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, &file.contents)?;
+        println!("Wrote {}", path.display());
     }
+
+    Ok(())
 }
