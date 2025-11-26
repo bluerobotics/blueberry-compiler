@@ -69,7 +69,7 @@ impl<'a> PythonGenerator<'a> {
         let payload_words = message.payload_words();
         let field_defs: Tokens = quote! {
             $(for field in &message.fields =>
-                $(field.name.clone()): $(python_type_hint(field.primitive))
+                $(field.name.clone()): $(python_type_hint(field.primitive))$['\n']
             )
         };
 
