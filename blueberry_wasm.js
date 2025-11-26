@@ -172,6 +172,26 @@ function handleError(f, args) {
         wasm.__wbindgen_exn_store(idx);
     }
 }
+
+export function wasm_start() {
+    wasm.wasm_start();
+}
+
+/**
+ * Parse and reserialize the given IDL, returning a JS object with both results.
+ * @param {string} input
+ * @param {string} mode
+ * @returns {any}
+ */
+export function analyze_idl_wasm(input, mode) {
+    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.analyze_idl_wasm(ptr0, len0, ptr1, len1);
+    return ret;
+}
+
 /**
  * Parse the given IDL source and return either the formatted AST
  * or the parse error description.
@@ -191,25 +211,6 @@ export function parse_idl_wasm(input) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
-}
-
-/**
- * Parse and reserialize the given IDL, returning a JS object with both results.
- * @param {string} input
- * @param {string} mode
- * @returns {any}
- */
-export function analyze_idl_wasm(input, mode) {
-    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.analyze_idl_wasm(ptr0, len0, ptr1, len1);
-    return ret;
-}
-
-export function wasm_start() {
-    wasm.wasm_start();
 }
 
 const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
