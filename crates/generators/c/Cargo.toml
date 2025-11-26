@@ -8,3 +8,7 @@ blueberry-ast = { path = "../../ast" }
 blueberry-codegen-core = { path = "../codegen-core" }
 quote = "1.0"
 proc-macro2 = "1.0"
+genco = "0.19"
+
+[dev-dependencies]
+blueberry-parser = { path = "../../parser" }

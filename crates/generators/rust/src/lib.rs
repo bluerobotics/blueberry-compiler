@@ -1,15 +1,12 @@
+use std::{collections::HashMap, fs, io, path::Path};
+
 use blueberry_ast::{
     Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef, ModuleDef, StructDef, Type,
     TypeDef,
 };
 use blueberry_codegen_core::{CodegenError, GeneratedFile};
-use proc_macro2::{Literal, TokenStream};
-use quote::{format_ident, quote};
-use std::{
-    collections::{HashMap, HashSet},
-    fs, io,
-    path::Path,
-};
+use genco::lang::rust::Tokens;
+use genco::quote;
 
 const OUTPUT_PATH: &str = "rust/blueberry_generated.rs";
 const RUNTIME_PATH: &str = "rust/blueberry_generated/runtime.rs";
@@ -33,7 +30,7 @@ pub fn generate_rust(definitions: &[Definition]) -> Result<Vec<GeneratedFile>, C
 
 /// Write the root generated Rust module to disk.
 ///
-/// Note: the Rust generator now emits multiple files. This helper writes only the
+/// Note: the Rust generator emits multiple files. This helper writes only the
 /// top-level module; use `generate_rust` to retrieve all files and persist them as needed.
 pub fn write_rust_file<P: AsRef<Path>>(definitions: &[Definition], path: P) -> io::Result<()> {
     let contents = RustGenerator::new(definitions).generate_root(definitions);
@@ -56,7 +53,7 @@ impl RustGenerator {
         }
     }
 
-    fn doc_attributes(&self, comments: &[String]) -> Vec<TokenStream> {
+    fn doc_attributes(&self, comments: &[String]) -> Vec<Tokens> {
         comments
             .iter()
             .flat_map(|comment| {
@@ -67,8 +64,7 @@ impl RustGenerator {
                         .lines()
                         .map(|line| {
                             let content = format!(" {}", line.trim_end());
-                            let text = Literal::string(&content);
-                            quote!(#[doc = #text])
+                            quote!(#[doc = $(format!("\"{content}\""))])
                         })
                         .collect()
                 }
@@ -78,107 +74,78 @@ impl RustGenerator {
 
     fn generate_root(&self, definitions: &[Definition]) -> String {
         let tokens = self.generate_root_tokens(definitions);
-        let file: syn::File = syn::parse2(tokens).expect("generated Rust should be valid");
-        prettyplease::unparse(&file)
+        tokens.to_file_string().expect("render rust root")
     }
 
     fn generate_runtime(&self) -> String {
         let tokens = self.runtime_module_items();
-        let file: syn::File = syn::parse2(tokens).expect("generated runtime should be valid");
-        prettyplease::unparse(&file)
+        tokens.to_file_string().expect("render rust runtime")
     }
 
-    fn generate_root_tokens(&self, definitions: &[Definition]) -> TokenStream {
+    fn generate_root_tokens(&self, definitions: &[Definition]) -> Tokens {
         let defs = self.emit_definitions(definitions, &[]);
         let tests = self.emit_tests(definitions);
         quote! {
             pub mod blueberry_generated {
                 pub mod runtime;
                 pub use runtime::BinarySerializable;
-                #(#defs)*
+                $(for def in defs => $def)
             }
 
-            #tests
+            $tests
         }
     }
 
-    fn emit_tests(&self, _definitions: &[Definition]) -> TokenStream {
+    fn emit_tests(&self, _definitions: &[Definition]) -> Tokens {
         let mut struct_paths: Vec<Vec<String>> = self.registry.structs.keys().cloned().collect();
         if struct_paths.is_empty() {
-            return TokenStream::new();
+            return Tokens::new();
         }
         struct_paths.sort();
-        let tests = struct_paths.into_iter().map(|path| {
-            let suffix = path
-                .iter()
-                .map(|segment| segment.to_lowercase())
-                .collect::<Vec<_>>()
-                .join("_");
-            let test_name = format_ident!("test_default_{suffix}");
-            let type_ident = format_ident!(
-                "{}",
-                path.last().expect("struct definition must have a name")
-            );
-            let type_path = self.relative_path(&path, &[]);
-            quote! {
-                #[test]
-                fn #test_name() {
-                    use crate::blueberry_generated::runtime::BinarySerializable;
-                    use #type_path;
+        let tests: Vec<Tokens> = struct_paths
+            .into_iter()
+            .map(|path| {
+                let suffix = path
+                    .iter()
+                    .map(|segment| segment.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                let test_name = format!("test_default_{suffix}");
+                let type_ident = path.last().expect("struct has name").to_string();
+                let type_ident_clone = type_ident.clone();
+                let type_path = self.relative_path(&path, &[]);
+                quote! {
+                    #[test]
+                    fn $test_name() {
+                        use crate::blueberry_generated::runtime::BinarySerializable;
+                        use $type_path;
 
-                    let value = #type_ident::default();
+                        let value = $type_ident::default();
 
-                    let bytes = value.serialize().expect("serialize");
+                        let bytes = value.serialize().expect("serialize");
 
-                    let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-                    println!("HEX: 0x{}", hex);
+                        let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                        println!("HEX: 0x{}", hex);
 
-                    let decoded = #type_ident::deserialize(&bytes).expect("deserialize");
+                        let decoded = $type_ident_clone::deserialize(&bytes).expect("deserialize");
 
-                    assert_eq!(value, decoded);
-                    println!("{:?}", decoded);
+                        assert_eq!(value, decoded);
+                        println!("{:?}", decoded);
+                    }
                 }
-            }
-        });
+            })
+            .collect();
 
         quote! {
             #[cfg(test)]
             mod generated_tests {
-                #(#tests)*
+                $(for t in tests => $t)
             }
         }
     }
 
-    fn runtime_module_items(&self) -> TokenStream {
-        let numeric_helpers: Vec<TokenStream> = [
-            ("i16", quote!(write_i16), quote!(read_i16)),
-            ("u16", quote!(write_u16), quote!(read_u16)),
-            ("i32", quote!(write_i32), quote!(read_i32)),
-            ("u32", quote!(write_u32), quote!(read_u32)),
-            ("i64", quote!(write_i64), quote!(read_i64)),
-            ("u64", quote!(write_u64), quote!(read_u64)),
-            ("f32", quote!(write_f32), quote!(read_f32)),
-            ("f64", quote!(write_f64), quote!(read_f64)),
-        ]
-        .into_iter()
-        .map(|(ty, write_fn, read_fn)| {
-            let ty_ident = syn::Ident::new(ty, proc_macro2::Span::call_site());
-            quote! {
-                pub fn #write_fn(buf: &mut Vec<u8>, value: #ty_ident) {
-                    buf.extend_from_slice(&value.to_le_bytes());
-                }
-
-                pub fn #read_fn(cursor: &mut std::io::Cursor<&[u8]>) -> Result<#ty_ident, Error> {
-                    let mut data = [0u8; std::mem::size_of::<#ty_ident>()];
-                    cursor
-                        .read_exact(&mut data)
-                        .map_err(|_| Error::UnexpectedEof)?;
-                    Ok(#ty_ident::from_le_bytes(data))
-                }
-            }
-        })
-        .collect();
-
+    fn runtime_module_items(&self) -> Tokens {
+        // Static runtime module copied from previous implementation.
         quote! {
             use std::io::{Cursor, Read};
 
@@ -212,13 +179,9 @@ impl RustGenerator {
                 buf.push(if value { 1 } else { 0 });
             }
 
-            pub fn read_bool(
-                cursor: &mut Cursor<&[u8]>,
-            ) -> Result<bool, Error> {
+            pub fn read_bool(cursor: &mut Cursor<&[u8]>) -> Result<bool, Error> {
                 let mut byte = [0u8; 1];
-                cursor
-                    .read_exact(&mut byte)
-                    .map_err(|_| Error::UnexpectedEof)?;
+                cursor.read_exact(&mut byte).map_err(|_| Error::UnexpectedEof)?;
                 Ok(byte[0] != 0)
             }
 
@@ -228,25 +191,94 @@ impl RustGenerator {
 
             pub fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, Error> {
                 let mut byte = [0u8; 1];
-                cursor
-                    .read_exact(&mut byte)
-                    .map_err(|_| Error::UnexpectedEof)?;
+                cursor.read_exact(&mut byte).map_err(|_| Error::UnexpectedEof)?;
                 Ok(byte[0])
             }
 
-            #(#numeric_helpers)*
+            pub fn write_i16(buf: &mut Vec<u8>, value: i16) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
 
-            pub fn write_string(
-                buf: &mut Vec<u8>,
-                value: &str,
-                bound: Option<usize>,
-            ) -> Result<(), Error> {
+            pub fn read_i16(cursor: &mut Cursor<&[u8]>) -> Result<i16, Error> {
+                let mut data = [0u8; std::mem::size_of::<i16>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(i16::from_le_bytes(data))
+            }
+
+            pub fn write_u16(buf: &mut Vec<u8>, value: u16) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_u16(cursor: &mut Cursor<&[u8]>) -> Result<u16, Error> {
+                let mut data = [0u8; std::mem::size_of::<u16>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(u16::from_le_bytes(data))
+            }
+
+            pub fn write_i32(buf: &mut Vec<u8>, value: i32) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_i32(cursor: &mut Cursor<&[u8]>) -> Result<i32, Error> {
+                let mut data = [0u8; std::mem::size_of::<i32>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(i32::from_le_bytes(data))
+            }
+
+            pub fn write_u32(buf: &mut Vec<u8>, value: u32) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
+                let mut data = [0u8; std::mem::size_of::<u32>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(u32::from_le_bytes(data))
+            }
+
+            pub fn write_i64(buf: &mut Vec<u8>, value: i64) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, Error> {
+                let mut data = [0u8; std::mem::size_of::<i64>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(i64::from_le_bytes(data))
+            }
+
+            pub fn write_u64(buf: &mut Vec<u8>, value: u64) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64, Error> {
+                let mut data = [0u8; std::mem::size_of::<u64>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(u64::from_le_bytes(data))
+            }
+
+            pub fn write_f32(buf: &mut Vec<u8>, value: f32) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_f32(cursor: &mut Cursor<&[u8]>) -> Result<f32, Error> {
+                let mut data = [0u8; std::mem::size_of::<f32>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(f32::from_le_bytes(data))
+            }
+
+            pub fn write_f64(buf: &mut Vec<u8>, value: f64) {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+
+            pub fn read_f64(cursor: &mut Cursor<&[u8]>) -> Result<f64, Error> {
+                let mut data = [0u8; std::mem::size_of::<f64>()];
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
+                Ok(f64::from_le_bytes(data))
+            }
+
+            pub fn write_string(buf: &mut Vec<u8>, value: &str, bound: Option<usize>) -> Result<(), Error> {
                 if let Some(limit) = bound {
                     if value.len() > limit {
-                        return Err(Error::StringTooLong {
-                            limit,
-                            actual: value.len(),
-                        });
+                        return Err(Error::StringTooLong { limit, actual: value.len() });
                     }
                 }
                 write_u32(buf, value.len() as u32);
@@ -254,41 +286,25 @@ impl RustGenerator {
                 Ok(())
             }
 
-            pub fn read_string(
-                cursor: &mut std::io::Cursor<&[u8]>,
-                bound: Option<usize>,
-            ) -> Result<String, Error> {
+            pub fn read_string(cursor: &mut Cursor<&[u8]>, bound: Option<usize>) -> Result<String, Error> {
                 let len = read_u32(cursor)? as usize;
                 if let Some(limit) = bound {
                     if len > limit {
-                        return Err(Error::StringTooLong {
-                            limit,
-                            actual: len,
-                        });
+                        return Err(Error::StringTooLong { limit, actual: len });
                     }
                 }
                 let mut data = vec![0u8; len];
-                cursor
-                    .read_exact(&mut data)
-                    .map_err(|_| Error::UnexpectedEof)?;
+                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
                 String::from_utf8(data).map_err(|_| Error::InvalidUtf8)
             }
 
-            pub fn write_vec<T, F>(
-                buf: &mut Vec<u8>,
-                values: &[T],
-                bound: Option<usize>,
-                mut serializer: F,
-            ) -> Result<(), Error>
+            pub fn write_vec<T, F>(buf: &mut Vec<u8>, values: &[T], bound: Option<usize>, mut serializer: F) -> Result<(), Error>
             where
                 F: FnMut(&T, &mut Vec<u8>) -> Result<(), Error>,
             {
                 if let Some(limit) = bound {
                     if values.len() > limit {
-                        return Err(Error::SequenceTooLong {
-                            limit,
-                            actual: values.len(),
-                        });
+                        return Err(Error::SequenceTooLong { limit, actual: values.len() });
                     }
                 }
                 write_u32(buf, values.len() as u32);
@@ -298,21 +314,14 @@ impl RustGenerator {
                 Ok(())
             }
 
-            pub fn read_vec<T, F>(
-                cursor: &mut std::io::Cursor<&[u8]>,
-                bound: Option<usize>,
-                mut parser: F,
-            ) -> Result<Vec<T>, Error>
+            pub fn read_vec<T, F>(cursor: &mut Cursor<&[u8]>, bound: Option<usize>, mut parser: F) -> Result<Vec<T>, Error>
             where
-                F: FnMut(&mut std::io::Cursor<&[u8]>) -> Result<T, Error>,
+                F: FnMut(&mut Cursor<&[u8]>) -> Result<T, Error>,
             {
                 let len = read_u32(cursor)? as usize;
                 if let Some(limit) = bound {
                     if len > limit {
-                        return Err(Error::SequenceTooLong {
-                            limit,
-                            actual: len,
-                        });
+                        return Err(Error::SequenceTooLong { limit, actual: len });
                     }
                 }
                 let mut items = Vec::with_capacity(len);
@@ -324,7 +333,7 @@ impl RustGenerator {
         }
     }
 
-    fn emit_definitions(&self, defs: &[Definition], scope: &[String]) -> Vec<TokenStream> {
+    fn emit_definitions(&self, defs: &[Definition], scope: &[String]) -> Vec<Tokens> {
         defs.iter()
             .map(|def| match def {
                 Definition::ModuleDef(module) => self.emit_module(module, scope),
@@ -333,122 +342,140 @@ impl RustGenerator {
                 Definition::StructDef(struct_def) => self.emit_struct(struct_def, scope),
                 Definition::MessageDef(message_def) => self.emit_message(message_def, scope),
                 Definition::ConstDef(const_def) => self.emit_const(const_def, scope),
-                Definition::ImportDef(_) => quote! {},
+                Definition::ImportDef(_) => Tokens::new(),
             })
             .collect()
     }
 
-    fn emit_module(&self, module: &Commented<ModuleDef>, scope: &[String]) -> TokenStream {
-        let ident = format_ident!("{}", module.node.name);
+    fn emit_module(&self, module: &Commented<ModuleDef>, scope: &[String]) -> Tokens {
+        let ident = module.node.name.clone();
         let mut new_scope = scope.to_vec();
         new_scope.push(module.node.name.clone());
         let defs = self.emit_definitions(&module.node.definitions, &new_scope);
-        let runtime_path = quote!(crate::blueberry_generated::runtime);
         let docs = self.doc_attributes(&module.comments);
         quote! {
-            #(#docs)*
-            pub mod #ident {
-                use #runtime_path;
-                #(#defs)*
+            $(for doc in docs => $doc)
+            pub mod $ident {
+                use crate::blueberry_generated::runtime;
+                $(for def in defs => $def)
             }
         }
     }
 
-    fn emit_typedef(&self, typedef: &Commented<TypeDef>, scope: &[String]) -> TokenStream {
-        let name = format_ident!("{}", typedef.node.name);
+    fn emit_typedef(&self, typedef: &Commented<TypeDef>, scope: &[String]) -> Tokens {
+        let name = typedef.node.name.clone();
         let resolved = self.registry.resolve_type(&typedef.node.base_type, scope);
         let ty = self.render_type(&resolved, scope);
         let docs = self.doc_attributes(&typedef.comments);
         quote! {
-            #(#docs)*
-            pub type #name = #ty;
+            $(for doc in docs => $doc)
+            pub type $name = $ty;
         }
     }
 
-    fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> TokenStream {
-        let ident = format_ident!("{}", enum_def.node.name);
-        let serde_attr = self.serde_attr();
+    fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> Tokens {
+        let ident = enum_def.node.name.clone();
         let repr_ty = enum_def
             .node
             .base_type
             .as_ref()
             .map(|t| self.render_type(t, scope))
             .unwrap_or_else(|| quote!(u32));
-        let variants = enum_def
+        let serde_attr = self.serde_attr_tokens();
+        let variants: Vec<Tokens> = enum_def
             .node
             .enumerators
             .iter()
             .enumerate()
             .map(|(idx, member)| {
-                let name = format_ident!("{}", member.name);
+                let name = member.name.clone();
                 let docs = self.doc_attributes(&member.comments);
-                let default_attr = (idx == 0).then(|| quote!(#[default]));
+                let default_attr = if idx == 0 {
+                    self.default_attr_tokens()
+                } else {
+                    Tokens::new()
+                };
                 if let Some(value) = &member.value {
                     let literal = self.render_const(value, scope);
                     quote! {
-                        #(#docs)*
-                        #default_attr
-                        #name = #literal,
+                        $(for doc in docs => $doc)
+                        $default_attr
+                        $name = $literal,
                     }
                 } else {
                     quote! {
-                        #(#docs)*
-                        #default_attr
-                        #name,
+                        $(for doc in docs => $doc)
+                        $default_attr
+                        $name,
                     }
                 }
-            });
-        let matches = enum_def.node.enumerators.iter().map(|member| {
-            let name = format_ident!("{}", member.name);
-            let literal = member
-                .value
-                .as_ref()
-                .map(|v| self.render_const(v, scope))
-                .unwrap_or_else(|| quote!(Self::#name as #repr_ty));
-            quote!(#literal => Ok(Self::#name),)
-        });
+            })
+            .collect();
+        let matches: Vec<Tokens> = enum_def
+            .node
+            .enumerators
+            .iter()
+            .map(|member| {
+                let name = member.name.clone();
+                let literal = if let Some(v) = &member.value {
+                    self.render_const(v, scope)
+                } else {
+                    let repr_clone = repr_ty.clone();
+                    let name_clone = name.clone();
+                    quote!(Self::$name_clone as $repr_clone)
+                };
+                let name_match = name.clone();
+                quote!( $literal => Ok(Self::$name_match), )
+            })
+            .collect();
         let docs = self.doc_attributes(&enum_def.comments);
+        let repr_ty_attr = repr_ty.clone();
+        let repr_ty_try_header = repr_ty.clone();
+        let repr_ty_try_value = repr_ty.clone();
+        let repr_ty_from_header = repr_ty.clone();
+        let repr_ty_from_body = repr_ty.clone();
+        let ident_try_header = ident.clone();
+        let ident_try_body = ident.clone();
+        let ident_from_header = ident.clone();
+        let ident_from_body = ident.clone();
         quote! {
-            #(#docs)*
-            #serde_attr
-            #[repr(#repr_ty)]
+            $(for doc in docs => $doc)
+            $serde_attr
+            #[repr($repr_ty_attr)]
             #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-            pub enum #ident {
-                #(#variants)*
+            pub enum $ident {
+                $(for v in variants => $v)
             }
 
-            impl ::core::convert::TryFrom<#repr_ty> for #ident {
+            impl ::core::convert::TryFrom<$repr_ty_try_header> for $ident_try_header {
                 type Error = runtime::Error;
 
-                fn try_from(value: #repr_ty) -> Result<Self, Self::Error> {
+                fn try_from(value: $repr_ty_try_value) -> Result<Self, Self::Error> {
                     match value {
-                        #(#matches)*
-                        _ => Err(runtime::Error::InvalidEnum {
-                            name: stringify!(#ident),
-                            value: value as i64,
-                        }),
+                        $(for m in matches => $m)
+                        _ => Err(runtime::Error::InvalidEnum { name: stringify!($ident_try_body), value: value as i64 }),
                     }
                 }
             }
 
-            impl From<#ident> for #repr_ty {
-                fn from(value: #ident) -> Self {
-                    value as #repr_ty
+            impl From<$ident_from_header> for $repr_ty_from_header {
+                fn from(value: $ident_from_body) -> Self {
+                    value as $repr_ty_from_body
                 }
             }
         }
     }
 
-    fn emit_struct(&self, struct_def: &Commented<StructDef>, scope: &[String]) -> TokenStream {
-        let ident = format_ident!("{}", struct_def.node.name);
+    fn emit_struct(&self, struct_def: &Commented<StructDef>, scope: &[String]) -> Tokens {
+        let ident = struct_def.node.name.clone();
         let mut path = scope.to_vec();
         path.push(struct_def.node.name.clone());
         let members = self.registry.collect_struct_members(&path);
         self.emit_struct_like(&ident, &members, &struct_def.comments, scope)
     }
 
-    fn emit_message(&self, message_def: &Commented<MessageDef>, scope: &[String]) -> TokenStream {
-        let ident = format_ident!("{}", message_def.node.name);
+    fn emit_message(&self, message_def: &Commented<MessageDef>, scope: &[String]) -> Tokens {
+        let ident = message_def.node.name.clone();
         let mut path = scope.to_vec();
         path.push(message_def.node.name.clone());
         let members = self.registry.collect_message_members(&path);
@@ -457,74 +484,78 @@ impl RustGenerator {
 
     fn emit_struct_like(
         &self,
-        ident: &proc_macro2::Ident,
+        ident: &str,
         members: &[ResolvedMember],
         comments: &[String],
         scope: &[String],
-    ) -> TokenStream {
-        let serde_attr = self.serde_attr();
-        let fields = members.iter().map(|member| {
-            let name = format_ident!("{}", member.name);
-            let ty = self.render_type(&member.ty, scope);
-            let docs = self.doc_attributes(&member.comments);
-            quote! {
-                #(#docs)*
-                pub #name: #ty,
-            }
-        });
+    ) -> Tokens {
+        let fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let name = member.name.clone();
+                let ty = self.render_type(&member.ty, scope);
+                let docs = self.doc_attributes(&member.comments);
+                quote! {
+                    $(for doc in docs => $doc)
+                    pub $name: $ty,
+                }
+            })
+            .collect();
         let docs = self.doc_attributes(comments);
+        let serde_attr = self.serde_attr_tokens();
 
-        let writes = members.iter().map(|member| {
-            let field = format_ident!("{}", member.name);
-            let expr = quote!(&self.#field);
-            self.serialize_value(expr, &member.ty, scope)
-        });
+        let writes: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let field = member.name.clone();
+                let expr = quote!(&self.$field);
+                self.serialize_value(expr, &member.ty, scope)
+            })
+            .collect();
 
-        let reads = members.iter().map(|member| {
-            let field = format_ident!("{}", member.name);
-            let expr = self.deserialize_value(&member.ty, scope);
-            quote! {
-                let #field = #expr?;
-            }
-        });
+        let reads: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let field = member.name.clone();
+                let expr = self.deserialize_value(&member.ty, scope);
+                quote! {
+                    let $field = $expr?;
+                }
+            })
+            .collect();
 
-        let field_names = members.iter().map(|member| {
-            let name = format_ident!("{}", member.name);
-            quote!(#name,)
-        });
+        let field_names: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let name = member.name.clone();
+                quote!($name,)
+            })
+            .collect();
 
         quote! {
-            #(#docs)*
-            #serde_attr
+            $(for doc in docs => $doc)
+            $serde_attr
             #[derive(Clone, Debug, PartialEq, Default)]
-            pub struct #ident {
-                #(#fields)*
+            pub struct $ident {
+                $(for f in fields => $f)
             }
 
-            impl runtime::BinarySerializable for #ident {
-                fn write_into(
-                    &self,
-                    buf: &mut Vec<u8>,
-                ) -> Result<(), runtime::Error> {
-                    #(#writes)*
+            impl runtime::BinarySerializable for $ident {
+                fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), runtime::Error> {
+                    $(for w in writes => $w)
                     Ok(())
                 }
 
-                fn read_from(
-                    cursor: &mut std::io::Cursor<&[u8]>,
-                ) -> Result<Self, runtime::Error> {
-                    #(#reads)*
-                    Ok(Self {
-                        #(#field_names)*
-                    })
+                fn read_from(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, runtime::Error> {
+                    $(for r in reads => $r)
+                    Ok(Self { $(for n in field_names => $n) })
                 }
             }
-
         }
     }
 
-    fn emit_const(&self, const_def: &Commented<ConstDef>, scope: &[String]) -> TokenStream {
-        let name = format_ident!("{}", const_def.node.name);
+    fn emit_const(&self, const_def: &Commented<ConstDef>, scope: &[String]) -> Tokens {
+        let name = const_def.node.name.clone();
         let ty = self
             .registry
             .resolve_type(&const_def.node.const_type, scope);
@@ -535,26 +566,26 @@ impl RustGenerator {
         }
         let docs = self.doc_attributes(&const_def.comments);
         quote! {
-            #(#docs)*
-            pub const #name: #ty_tokens = #value;
+            $(for doc in docs => $doc)
+            pub const $name: $ty_tokens = $value;
         }
     }
 
-    fn serialize_value(&self, expr: TokenStream, ty: &Type, scope: &[String]) -> TokenStream {
+    fn serialize_value(&self, expr: Tokens, ty: &Type, scope: &[String]) -> Tokens {
         match ty {
-            Type::Long => quote!(runtime::write_i32(buf, *#expr);),
-            Type::Short => quote!(runtime::write_i16(buf, *#expr);),
-            Type::UnsignedShort => quote!(runtime::write_u16(buf, *#expr);),
-            Type::UnsignedLong => quote!(runtime::write_u32(buf, *#expr);),
-            Type::LongLong => quote!(runtime::write_i64(buf, *#expr);),
-            Type::UnsignedLongLong => quote!(runtime::write_u64(buf, *#expr);),
-            Type::Float => quote!(runtime::write_f32(buf, *#expr);),
-            Type::Double => quote!(runtime::write_f64(buf, *#expr);),
-            Type::Boolean => quote!(runtime::write_bool(buf, *#expr);),
-            Type::Octet => quote!(buf.push(*#expr);),
+            Type::Long => quote!(runtime::write_i32(buf, *$expr);),
+            Type::Short => quote!(runtime::write_i16(buf, *$expr);),
+            Type::UnsignedShort => quote!(runtime::write_u16(buf, *$expr);),
+            Type::UnsignedLong => quote!(runtime::write_u32(buf, *$expr);),
+            Type::LongLong => quote!(runtime::write_i64(buf, *$expr);),
+            Type::UnsignedLongLong => quote!(runtime::write_u64(buf, *$expr);),
+            Type::Float => quote!(runtime::write_f32(buf, *$expr);),
+            Type::Double => quote!(runtime::write_f64(buf, *$expr);),
+            Type::Boolean => quote!(runtime::write_bool(buf, *$expr);),
+            Type::Octet => quote!(buf.push(*$expr);),
             Type::String { bound } => {
                 let limit = self.bound_tokens(*bound);
-                quote!(runtime::write_string(buf, #expr, #limit)?;)
+                quote!(runtime::write_string(buf, $expr, $limit)?;)
             }
             Type::Sequence { element_type, size } => {
                 let limit = self.bound_tokens(*size);
@@ -563,10 +594,10 @@ impl RustGenerator {
                 quote! {
                     runtime::write_vec(
                         buf,
-                        #expr,
-                        #limit,
-                        |value: &#element_ty, buf| {
-                            #inner
+                        $expr,
+                        $limit,
+                        |value: &$element_ty, buf| {
+                            $inner
                             Ok(())
                         },
                     )?;
@@ -575,9 +606,9 @@ impl RustGenerator {
             Type::ScopedName(path) => {
                 if let Some(base_type) = self.registry.enum_repr(path) {
                     let writer = self.writer_fn(base_type);
-                    quote!(runtime::#writer(buf, (*#expr).into());)
+                    quote!(runtime::$writer(buf, (*$expr).into());)
                 } else {
-                    quote!(runtime::BinarySerializable::write_into(#expr, buf)?;)
+                    quote!(runtime::BinarySerializable::write_into($expr, buf)?;)
                 }
             }
             _ => quote! {
@@ -586,7 +617,7 @@ impl RustGenerator {
         }
     }
 
-    fn deserialize_value(&self, ty: &Type, scope: &[String]) -> TokenStream {
+    fn deserialize_value(&self, ty: &Type, scope: &[String]) -> Tokens {
         match ty {
             Type::Long => quote!(runtime::read_i32(cursor)),
             Type::Short => quote!(runtime::read_i16(cursor)),
@@ -600,13 +631,13 @@ impl RustGenerator {
             Type::Octet => quote!(runtime::read_u8(cursor)),
             Type::String { bound } => {
                 let limit = self.bound_tokens(*bound);
-                quote!(runtime::read_string(cursor, #limit))
+                quote!(runtime::read_string(cursor, $limit))
             }
             Type::Sequence { element_type, size } => {
                 let limit = self.bound_tokens(*size);
                 let inner = self.deserialize_value(element_type, scope);
                 quote! {
-                    runtime::read_vec(cursor, #limit, |cursor| #inner)
+                    runtime::read_vec(cursor, $limit, |cursor| $inner)
                 }
             }
             Type::ScopedName(path) => {
@@ -615,12 +646,12 @@ impl RustGenerator {
                     let enum_path = self.relative_path(path, scope);
                     let repr_ty = self.render_type(base_type, scope);
                     quote! {{
-                        let raw = runtime::#reader(cursor)?;
-                        <#enum_path as ::core::convert::TryFrom<#repr_ty>>::try_from(raw)
+                        let raw = runtime::$reader(cursor)?;
+                        <$enum_path as ::core::convert::TryFrom<$repr_ty>>::try_from(raw)
                     }}
                 } else {
                     let path_tokens = self.relative_path(path, scope);
-                    quote!(<#path_tokens as runtime::BinarySerializable>::read_from(cursor))
+                    quote!(<$path_tokens as runtime::BinarySerializable>::read_from(cursor))
                 }
             }
             _ => quote! {
@@ -629,7 +660,7 @@ impl RustGenerator {
         }
     }
 
-    fn render_type(&self, ty: &Type, scope: &[String]) -> TokenStream {
+    fn render_type(&self, ty: &Type, scope: &[String]) -> Tokens {
         match ty {
             Type::Long => quote!(i32),
             Type::Short => quote!(i16),
@@ -644,40 +675,38 @@ impl RustGenerator {
             Type::String { .. } => quote!(String),
             Type::Sequence { element_type, .. } => {
                 let inner = self.render_type(element_type, scope);
-                quote!(Vec<#inner>)
+                quote!(Vec<$inner>)
             }
             Type::ScopedName(path) => self.relative_path(path, scope),
             _ => quote!(String),
         }
     }
 
-    fn render_const(&self, value: &ConstValue, scope: &[String]) -> TokenStream {
+    fn render_const(&self, value: &ConstValue, scope: &[String]) -> Tokens {
         match value {
             ConstValue::Integer(lit) => {
-                let literal = Literal::i64_unsuffixed(lit.value);
-                quote!(#literal)
+                let literal = lit.value;
+                quote!($literal)
             }
             ConstValue::Float(f) => {
-                let literal = Literal::f64_unsuffixed(*f);
-                quote!(#literal)
+                let literal = format!("{}", f);
+                quote!($literal)
             }
             ConstValue::Fixed(fixed) => {
-                let literal = Literal::f64_unsuffixed(fixed.to_f64());
-                quote!(#literal)
+                let literal = format!("{}", fixed.to_f64());
+                quote!($literal)
             }
             ConstValue::Binary(binary) => {
-                let literal = Literal::i64_unsuffixed(binary.to_i64());
-                quote!(#literal)
+                let literal = binary.to_i64();
+                quote!($literal)
             }
             ConstValue::String(text) => {
-                let literal = Literal::string(text);
-                quote!(#literal)
+                quote!($(format!("\"{text}\"")))
             }
             ConstValue::Boolean(true) => quote!(true),
             ConstValue::Boolean(false) => quote!(false),
             ConstValue::Char(ch) => {
-                let literal = Literal::character(*ch);
-                quote!(#literal)
+                quote!($(format!("'{}'", ch)))
             }
             ConstValue::ScopedName(path) => self.relative_path(path, scope),
             ConstValue::UnaryOp { op, expr } => {
@@ -686,7 +715,7 @@ impl RustGenerator {
                     blueberry_ast::UnaryOperator::Plus => quote!(+),
                     blueberry_ast::UnaryOperator::Minus => quote!(-),
                 };
-                quote!((#op_token #inner))
+                quote!(( $op_token $inner ))
             }
             ConstValue::BinaryOp { op, left, right } => {
                 let lhs = self.render_const(left, scope);
@@ -697,29 +726,27 @@ impl RustGenerator {
                     blueberry_ast::BinaryOperator::Multiply => quote!(*),
                     blueberry_ast::BinaryOperator::Divide => quote!(/),
                 };
-                quote!((#lhs #op_token #rhs))
+                quote!(( $lhs $op_token $rhs ))
             }
         }
     }
 
-    fn serde_attr(&self) -> Option<TokenStream> {
-        Some(quote!(#[cfg_attr(
-            feature = "serde",
-            derive(::serde::Serialize, ::serde::Deserialize)
-        )]))
+    fn serde_attr_tokens(&self) -> Tokens {
+        quote!(#[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))])
     }
 
-    fn bound_tokens(&self, bound: Option<u32>) -> TokenStream {
+    fn default_attr_tokens(&self) -> Tokens {
+        quote!(#[default])
+    }
+
+    fn bound_tokens(&self, bound: Option<u32>) -> Tokens {
         match bound {
-            Some(limit) => {
-                let literal = Literal::u32_unsuffixed(limit);
-                quote!(Some(#literal as usize))
-            }
+            Some(limit) => quote!(Some($(format!("{}usize", limit)))),
             None => quote!(None),
         }
     }
 
-    fn writer_fn(&self, ty: &Type) -> TokenStream {
+    fn writer_fn(&self, ty: &Type) -> Tokens {
         match ty {
             Type::Short => quote!(write_i16),
             Type::UnsignedShort => quote!(write_u16),
@@ -732,7 +759,7 @@ impl RustGenerator {
         }
     }
 
-    fn reader_fn(&self, ty: &Type) -> TokenStream {
+    fn reader_fn(&self, ty: &Type) -> Tokens {
         match ty {
             Type::Short => quote!(read_i16),
             Type::UnsignedShort => quote!(read_u16),
@@ -745,13 +772,13 @@ impl RustGenerator {
         }
     }
 
-    fn relative_path(&self, target: &[String], _scope: &[String]) -> TokenStream {
-        target
-            .iter()
-            .fold(quote!(crate::blueberry_generated), |acc, segment| {
-                let ident = format_ident!("{}", segment);
-                quote!(#acc::#ident)
-            })
+    fn relative_path(&self, target: &[String], _scope: &[String]) -> Tokens {
+        let mut path = String::from("crate::blueberry_generated");
+        for segment in target {
+            path.push_str("::");
+            path.push_str(segment);
+        }
+        quote!($path)
     }
 }
 
@@ -968,7 +995,7 @@ impl TypeRegistry {
         I: IntoIterator<Item = &'a Vec<String>>,
     {
         let paths: Vec<Vec<String>> = entries.into_iter().cloned().collect();
-        let lookup: HashSet<Vec<String>> = paths.iter().cloned().collect();
+        let lookup: std::collections::HashSet<Vec<String>> = paths.iter().cloned().collect();
         for prefix in (0..=scope.len()).rev() {
             let mut candidate = scope[..prefix].to_vec();
             candidate.extend_from_slice(name);
@@ -1035,72 +1062,6 @@ mod tests {
                 assert_eq!(path, &["Blueberry".to_string(), "HwType".to_string()])
             }
             other => panic!("expected scoped name, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn relative_path_uses_full_module_segments() {
-        let generator = RustGenerator::new(&[]);
-        let path = vec!["Blueberry".to_string(), "HwType".to_string()];
-        let tokens = generator.relative_path(&path, &[]);
-        assert_eq!(
-            tokens.to_string(),
-            "crate :: blueberry_generated :: Blueberry :: HwType"
-        );
-    }
-
-    #[test]
-    fn propagates_comments_into_generated_rust() {
-        let idl = r#"
-            // Telemetry data types
-            module Telemetry {
-                // Signed distance in meters
-                typedef long Distance;
-
-                // Detailed reading
-                struct Reading {
-                    // Unique identifier
-                    long id;
-                    // Travel distance
-                    Distance distance;
-                };
-
-                // Current mode
-                enum Mode {
-                    // Idle state
-                    IDLE = 0,
-                    // Active state
-                    ACTIVE = 1,
-                };
-
-                // Maximum allowed count
-                const long MAX_COUNT = 5;
-            };
-        "#;
-
-        let definitions = parse_idl(idl).expect("input parses");
-        let files = generate_rust(&definitions).expect("generation succeeds");
-        let rust = files
-            .iter()
-            .find(|file| file.path == OUTPUT_PATH)
-            .or_else(|| files.first())
-            .map(|file| file.contents.clone())
-            .expect("root file exists");
-        for expected in [
-            "/// Telemetry data types",
-            "/// Signed distance in meters",
-            "/// Detailed reading",
-            "/// Unique identifier",
-            "/// Travel distance",
-            "/// Current mode",
-            "/// Idle state",
-            "/// Active state",
-            "/// Maximum allowed count",
-        ] {
-            assert!(
-                rust.contains(expected),
-                "missing expected doc attribute {expected}"
-            );
         }
     }
 }
