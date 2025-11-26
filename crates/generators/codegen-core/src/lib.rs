@@ -1,7 +1,6 @@
 use blueberry_ast::{
     Annotation, AnnotationParam, Commented, ConstValue, Definition, MessageDef, Type,
 };
-use proc_macro2::{Delimiter, Group, Literal, Punct, Spacing, TokenStream, TokenTree};
 
 pub const DEFAULT_MODULE_KEY: u16 = 0x4242;
 pub const MESSAGE_HEADER_SIZE: usize = 8;
@@ -165,13 +164,44 @@ impl MessageCollector {
             .unwrap_or_else(|| self.next_message_key());
         let mut fields = Vec::new();
         for member in &message_def.node.members {
-            let primitive = PrimitiveType::try_from(&member.node.type_).map_err(|_| {
-                CodegenError::UnsupportedMemberType {
-                    message: scoped_name(scope, &message_def.node.name),
-                    member: member.node.name.clone(),
-                    type_name: type_name(&member.node.type_),
+            let primitive = match PrimitiveType::try_from(&member.node.type_) {
+                Ok(primitive) => primitive,
+                Err(_) => {
+                    let type_name = match &member.node.type_ {
+                        Type::Float => "float",
+                        Type::Double => "double",
+                        Type::LongDouble => "long double",
+                        Type::Long => "long",
+                        Type::UnsignedLong => "unsigned long",
+                        Type::Short => "short",
+                        Type::UnsignedShort => "unsigned short",
+                        Type::LongLong => "long long",
+                        Type::UnsignedLongLong => "unsigned long long",
+                        Type::Octet => "octet",
+                        Type::Boolean => "boolean",
+                        Type::Char => "char",
+                        Type::WChar => "wchar",
+                        Type::String { .. } => "string",
+                        Type::WString => "wstring",
+                        Type::Sequence { .. } => "sequence",
+                        Type::Array { .. } => "array",
+                        Type::ScopedName(path) => {
+                            return Err(CodegenError::UnsupportedMemberType {
+                                message: scoped_name(scope, &message_def.node.name),
+                                member: member.node.name.clone(),
+                                type_name: path.join("::"),
+                            });
+                        }
+                    }
+                    .to_string();
+
+                    return Err(CodegenError::UnsupportedMemberType {
+                        message: scoped_name(scope, &message_def.node.name),
+                        member: member.node.name.clone(),
+                        type_name,
+                    });
                 }
-            })?;
+            };
             fields.push(FieldSpec {
                 name: member.node.name.clone(),
                 primitive,
@@ -257,29 +287,6 @@ pub fn scoped_name(scope: &[String], name: &str) -> String {
     }
 }
 
-pub fn type_name(type_: &Type) -> String {
-    match type_ {
-        Type::Float => "float".into(),
-        Type::Double => "double".into(),
-        Type::LongDouble => "long double".into(),
-        Type::Long => "long".into(),
-        Type::UnsignedLong => "unsigned long".into(),
-        Type::Short => "short".into(),
-        Type::UnsignedShort => "unsigned short".into(),
-        Type::LongLong => "long long".into(),
-        Type::UnsignedLongLong => "unsigned long long".into(),
-        Type::Octet => "octet".into(),
-        Type::Boolean => "boolean".into(),
-        Type::Char => "char".into(),
-        Type::WChar => "wchar".into(),
-        Type::String { .. } => "string".into(),
-        Type::WString => "wstring".into(),
-        Type::Sequence { .. } => "sequence".into(),
-        Type::Array { .. } => "array".into(),
-        Type::ScopedName(path) => path.join("::"),
-    }
-}
-
 pub fn to_snake_case(identifier: &str) -> String {
     let mut result = String::new();
     let mut prev_lower = false;
@@ -320,6 +327,8 @@ pub fn uppercase_path(scope: &[String], name: &str) -> String {
 }
 
 pub fn quoted_string(value: &str) -> String {
+    // Produces a double-quoted, escaped literal suitable for generators that embed raw text
+    // (C, C++, Python, etc.) without relying on proc-macro tokenization.
     let mut escaped = String::new();
     for ch in value.chars() {
         match ch {
@@ -383,189 +392,4 @@ pub struct TopicFormat {
 pub enum TopicPlaceholder {
     DeviceType,
     Nid,
-}
-
-pub struct SourceWriter {
-    buffer: String,
-}
-
-impl Default for SourceWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SourceWriter {
-    pub fn new() -> Self {
-        Self {
-            buffer: String::new(),
-        }
-    }
-
-    pub fn push(&mut self, tokens: TokenStream) {
-        self.buffer.push_str(&render_tokens(tokens));
-    }
-
-    pub fn push_line(&mut self, tokens: TokenStream) {
-        self.push(tokens);
-        self.buffer.push('\n');
-    }
-
-    pub fn push_str(&mut self, text: &str) {
-        self.buffer.push_str(text);
-    }
-
-    pub fn newline(&mut self) {
-        if !self.buffer.ends_with('\n') {
-            self.buffer.push('\n');
-        }
-    }
-
-    pub fn blank_line(&mut self) {
-        self.newline();
-        self.buffer.push('\n');
-    }
-
-    pub fn into_string(self) -> String {
-        self.buffer
-    }
-}
-
-fn render_tokens(tokens: TokenStream) -> String {
-    let mut renderer = TokenRenderer::new();
-    renderer.render_stream(tokens);
-    renderer.finish()
-}
-
-struct TokenRenderer {
-    buffer: String,
-    prev: Prev,
-    joint: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Prev {
-    Start,
-    Whitespace,
-    Word,
-    Symbol(char),
-}
-
-impl TokenRenderer {
-    fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            prev: Prev::Start,
-            joint: false,
-        }
-    }
-
-    fn finish(self) -> String {
-        self.buffer
-    }
-
-    fn render_stream(&mut self, tokens: TokenStream) {
-        for token in tokens {
-            match token {
-                TokenTree::Ident(ident) => self.write_ident(ident),
-                TokenTree::Literal(literal) => self.write_literal(literal),
-                TokenTree::Group(group) => self.write_group(group),
-                TokenTree::Punct(punct) => self.write_punct(punct),
-            }
-        }
-    }
-
-    fn write_ident(&mut self, ident: proc_macro2::Ident) {
-        self.ensure_space_before_word();
-        self.buffer.push_str(&ident.to_string());
-        self.prev = Prev::Word;
-        self.joint = false;
-    }
-
-    fn write_literal(&mut self, literal: Literal) {
-        self.ensure_space_before_word();
-        self.buffer.push_str(&literal.to_string());
-        self.prev = Prev::Word;
-        self.joint = false;
-    }
-
-    fn write_group(&mut self, group: Group) {
-        let (open, close) = match group.delimiter() {
-            Delimiter::Parenthesis => ('(', ')'),
-            Delimiter::Brace => ('{', '}'),
-            Delimiter::Bracket => ('[', ']'),
-            Delimiter::None => ('\0', '\0'),
-        };
-        if open != '\0' {
-            if matches!(open, '{') && matches!(self.prev, Prev::Word) {
-                self.buffer.push(' ');
-            }
-            self.buffer.push(open);
-        }
-        self.prev = Prev::Symbol(open);
-        self.render_stream(group.stream());
-        if close != '\0' {
-            self.buffer.push(close);
-            self.prev = Prev::Symbol(close);
-        }
-        self.joint = false;
-    }
-
-    fn write_punct(&mut self, punct: Punct) {
-        let ch = punct.as_char();
-        match ch {
-            ',' => {
-                self.buffer.push(',');
-                self.buffer.push(' ');
-                self.prev = Prev::Whitespace;
-            }
-            ';' => {
-                self.buffer.push(';');
-                self.prev = Prev::Symbol(';');
-            }
-            '*' => {
-                if matches!(self.prev, Prev::Word) {
-                    self.buffer.push(' ');
-                }
-                self.buffer.push('*');
-                self.prev = Prev::Symbol('*');
-            }
-            '=' | '+' | '-' | '/' | '%' => {
-                if matches!(
-                    self.prev,
-                    Prev::Word | Prev::Symbol(')') | Prev::Symbol(']')
-                ) {
-                    self.buffer.push(' ');
-                }
-                self.buffer.push(ch);
-                self.buffer.push(' ');
-                self.prev = Prev::Whitespace;
-            }
-            '#' => {
-                self.buffer.push('#');
-                self.prev = Prev::Symbol('#');
-            }
-            _ => {
-                self.buffer.push(ch);
-                self.prev = Prev::Symbol(ch);
-            }
-        }
-        self.joint = punct.spacing() == Spacing::Joint;
-    }
-
-    fn ensure_space_before_word(&mut self) {
-        if self.joint {
-            self.joint = false;
-            return;
-        }
-        match self.prev {
-            Prev::Start | Prev::Whitespace => {}
-            Prev::Symbol('#' | '<' | '(' | '[' | '{' | '*' | ':' | '.' | '/' | '-') => {}
-            _ => {
-                if !self.buffer.ends_with(' ') && !self.buffer.ends_with('\n') {
-                    self.buffer.push(' ');
-                }
-            }
-        }
-    }
 }
