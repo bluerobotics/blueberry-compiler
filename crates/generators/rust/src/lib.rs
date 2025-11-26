@@ -122,12 +122,12 @@ impl RustGenerator {
 
                         let value = $type_ident::default();
 
-                        let bytes = value.serialize().expect("serialize");
+                        let bytes = value.to_payload().expect("to_payload");
 
                         let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                         println!("HEX: 0x{}", hex);
 
-                        let decoded = $type_ident_clone::deserialize(&bytes).expect("deserialize");
+                        let decoded = $type_ident_clone::from_payload(&bytes).expect("from_payload");
 
                         assert_eq!(value, decoded);
                         println!("{:?}", decoded);
@@ -159,20 +159,20 @@ impl RustGenerator {
             }
 
             pub trait BinarySerializable: Sized {
-                fn serialize(&self) -> Result<Vec<u8>, Error> {
+                fn to_payload(&self) -> Result<Vec<u8>, Error> {
                     let mut buf = Vec::new();
-                    self.write_into(&mut buf)?;
+                    self.write_payload(&mut buf)?;
                     Ok(buf)
                 }
 
-                fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
+                fn write_payload(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
 
-                fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+                fn from_payload(bytes: &[u8]) -> Result<Self, Error> {
                     let mut cursor = Cursor::new(bytes);
-                    Self::read_from(&mut cursor)
+                    Self::read_payload(&mut cursor)
                 }
 
-                fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
+                fn read_payload(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
             }
 
             pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
@@ -541,12 +541,12 @@ impl RustGenerator {
             }
 
             impl runtime::BinarySerializable for $ident {
-                fn write_into(&self, buf: &mut Vec<u8>) -> Result<(), runtime::Error> {
+                fn write_payload(&self, buf: &mut Vec<u8>) -> Result<(), runtime::Error> {
                     $(for w in writes => $w)
                     Ok(())
                 }
 
-                fn read_from(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, runtime::Error> {
+                fn read_payload(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, runtime::Error> {
                     $(for r in reads => $r)
                     Ok(Self { $(for n in field_names => $n) })
                 }
@@ -608,7 +608,7 @@ impl RustGenerator {
                     let writer = self.writer_fn(base_type);
                     quote!(runtime::$writer(buf, (*$expr).into());)
                 } else {
-                    quote!(runtime::BinarySerializable::write_into($expr, buf)?;)
+                    quote!(runtime::BinarySerializable::write_payload($expr, buf)?;)
                 }
             }
             _ => quote! {
@@ -651,7 +651,7 @@ impl RustGenerator {
                     }}
                 } else {
                     let path_tokens = self.relative_path(path, scope);
-                    quote!(<$path_tokens as runtime::BinarySerializable>::read_from(cursor))
+                    quote!(<$path_tokens as runtime::BinarySerializable>::read_payload(cursor))
                 }
             }
             _ => quote! {
