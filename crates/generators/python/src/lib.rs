@@ -36,6 +36,7 @@ impl<'a> PythonGenerator<'a> {
         let tokens: Tokens = quote! {
             # Auto-generated Blueberry bindings
 
+            from __future__ import annotations
             from dataclasses import dataclass
             import struct
             from typing import ClassVar
