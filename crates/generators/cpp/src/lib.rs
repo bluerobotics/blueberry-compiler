@@ -247,28 +247,33 @@ fn helpers_tokens() -> Tokens {
         inline std::int64_t read_i64(const std::uint8_t *in) { return static_cast<std::int64_t>(read_u64(in)); }
         inline void write_u64_val(std::uint64_t value, std::uint8_t *out) { write_u64(value, out); }
         inline std::uint64_t read_u64_val(const std::uint8_t *in) { return read_u64(in); }
+
         inline void write_f32(float value, std::uint8_t *out) {
           std::uint32_t bits;
           std::memcpy(&bits, &value, sizeof(bits));
           write_u32(bits, out);
         }
+
         inline float read_f32(const std::uint8_t *in) {
           std::uint32_t bits = read_u32(in);
           float value;
           std::memcpy(&value, &bits, sizeof(value));
           return value;
         }
+
         inline void write_f64(double value, std::uint8_t *out) {
           std::uint64_t bits;
           std::memcpy(&bits, &value, sizeof(bits));
           write_u64(bits, out);
         }
+
         inline double read_f64(const std::uint8_t *in) {
           std::uint64_t bits = read_u64(in);
           double value;
           std::memcpy(&value, &bits, sizeof(value));
           return value;
         }
+
         inline void replace_placeholder(std::string &topic, std::string_view placeholder, std::string_view value) {
           const std::string needle(placeholder);
           const std::string replacement(value);
