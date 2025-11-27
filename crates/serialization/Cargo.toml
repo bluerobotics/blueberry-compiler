@@ -1,0 +1,9 @@
+[package]
+name = "blueberry-serialization"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cdr = "0.2.4"
+serde = { version = "1.0.228", features = ["derive"] }
+zenoh = "1.6.2"
