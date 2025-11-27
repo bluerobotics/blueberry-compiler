@@ -124,7 +124,7 @@ impl<'a> CppGenerator<'a> {
 
         let members: Tokens = quote! {
             $(for field in fields =>
-                $(cpp_field_type(field.primitive)) $(field.name.clone())_{};
+                $(cpp_field_type(field.primitive)) $(field.name.clone())_{};$['\n']
             )
         };
 
