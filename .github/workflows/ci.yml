@@ -33,9 +33,5 @@ jobs:
       - name: Run tests
         run: cargo test --all --all-features
 
-      - name: CLI smoke tests
-        run: |
-          for flag in --emit-idl --emit-rust; do
-            echo "Running blueberry-cli $flag"
-            cargo run --bin blueberry-cli -- crates/parser/tests/fixtures/blueberry_full.idl $flag
-          done
+      - name: Validate generated bindings
+        run: ./test/run_tests.sh
