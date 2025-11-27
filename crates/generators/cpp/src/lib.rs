@@ -140,7 +140,7 @@ impl<'a> CppGenerator<'a> {
 
                 $class_ident_ref() = default;
                 $(if !fields.is_empty() {
-                    quote!(explicit $class_ident_ref($ctor_params) : $ctor_inits {})
+                    explicit $class_ident_ref($ctor_params) : $ctor_inits {}
                 })
 
                 $accessors
