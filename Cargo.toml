@@ -11,4 +11,9 @@ members = [
     "crates/generators/rust",
     "crates/wasm",
 ]
+
+exclude = [
+    "test/rust",
+]
+
 resolver = "2"
