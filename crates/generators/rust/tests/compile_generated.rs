@@ -39,20 +39,48 @@ fn compile_fixture(relative_path: &str) {
             eprintln!("Wrote generated output to {}", dump_path.display());
         }
     }
-    let output_path = temp_dir.path().join("generated.rlib");
+    let manifest_path = temp_dir.path().join("Cargo.toml");
+    fs::write(
+        &manifest_path,
+        r#"[package]
+name = "blueberry-generated"
+version = "0.0.0"
+edition = "2024"
 
-    let output = Command::new("rustc")
-        .arg("--edition=2024")
-        .arg("--crate-type=lib")
-        .arg(&source_path)
-        .arg("-o")
-        .arg(&output_path)
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+cdr = "0.2"
+"#,
+    )
+    .expect("failed to write Cargo.toml");
+
+    // Place generated files where Cargo expects them.
+    let src_dir = temp_dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create src directory");
+    fs::write(
+        src_dir.join("lib.rs"),
+        fs::read_to_string(&source_path).unwrap(),
+    )
+    .expect("failed to copy root file");
+    let runtime_src = temp_dir.path().join("rust/blueberry_generated/runtime.rs");
+    let runtime_dest = src_dir.join("blueberry_generated");
+    fs::create_dir_all(&runtime_dest).expect("failed to create runtime directory");
+    fs::write(
+        runtime_dest.join("runtime.rs"),
+        fs::read_to_string(runtime_src).unwrap(),
+    )
+    .expect("failed to copy runtime file");
+
+    let output = Command::new("cargo")
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
         .output()
-        .expect("failed to invoke rustc");
+        .expect("failed to invoke cargo");
 
     assert!(
         output.status.success(),
-        "rustc failed: {}",
+        "cargo check failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
