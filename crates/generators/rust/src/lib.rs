@@ -88,7 +88,7 @@ impl RustGenerator {
         quote! {
             pub mod blueberry_generated {
                 pub mod runtime;
-                pub use runtime::BinarySerializable;
+                pub use runtime::CdrEncoding;
                 $(for def in defs => $def)
             }
 
@@ -117,17 +117,16 @@ impl RustGenerator {
                 quote! {
                     #[test]
                     fn $test_name() {
-                        use crate::blueberry_generated::runtime::BinarySerializable;
+                        use crate::blueberry_generated::runtime::CdrEncoding;
                         use $type_path;
 
                         let value = $type_ident::default();
 
                         let bytes = value.to_payload().expect("to_payload");
-
                         let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                         println!("HEX: 0x{}", hex);
 
-                        let decoded = $type_ident_clone::from_payload(&bytes).expect("from_payload");
+                        let decoded = <$type_ident_clone as CdrEncoding>::from_payload(&bytes).expect("from_payload");
 
                         assert_eq!(value, decoded);
                         println!("{:?}", decoded);
@@ -145,191 +144,36 @@ impl RustGenerator {
     }
 
     fn runtime_module_items(&self) -> Tokens {
-        // Static runtime module copied from previous implementation.
         quote! {
-            use std::io::{Cursor, Read};
+            use cdr::{deserialize, serialize, CdrLe, Infinite};
+            use serde::{de::DeserializeOwned, Serialize};
 
             #[derive(Debug)]
             pub enum Error {
-                UnexpectedEof,
-                InvalidUtf8,
-                StringTooLong { limit: usize, actual: usize },
-                SequenceTooLong { limit: usize, actual: usize },
+                Cdr(cdr::Error),
                 InvalidEnum { name: &'static str, value: i64 },
             }
 
-            pub trait BinarySerializable: Sized {
+            impl From<cdr::Error> for Error {
+                fn from(err: cdr::Error) -> Self {
+                    Error::Cdr(err)
+                }
+            }
+
+            pub trait CdrEncoding: Serialize + DeserializeOwned {
                 fn to_payload(&self) -> Result<Vec<u8>, Error> {
-                    let mut buf = Vec::new();
-                    self.write_payload(&mut buf)?;
-                    Ok(buf)
+                    serialize::<_, _, CdrLe>(self, Infinite).map_err(Error::Cdr)
                 }
 
-                fn write_payload(&self, buf: &mut Vec<u8>) -> Result<(), Error>;
-
-                fn from_payload(bytes: &[u8]) -> Result<Self, Error> {
-                    let mut cursor = Cursor::new(bytes);
-                    Self::read_payload(&mut cursor)
+                fn from_payload(bytes: &[u8]) -> Result<Self, Error>
+                where
+                    Self: Sized,
+                {
+                    deserialize(bytes).map_err(Error::Cdr)
                 }
-
-                fn read_payload(cursor: &mut Cursor<&[u8]>) -> Result<Self, Error>;
             }
 
-            pub fn write_bool(buf: &mut Vec<u8>, value: bool) {
-                buf.push(if value { 1 } else { 0 });
-            }
-
-            pub fn read_bool(cursor: &mut Cursor<&[u8]>) -> Result<bool, Error> {
-                let mut byte = [0u8; 1];
-                cursor.read_exact(&mut byte).map_err(|_| Error::UnexpectedEof)?;
-                Ok(byte[0] != 0)
-            }
-
-            pub fn write_u8(buf: &mut Vec<u8>, value: u8) {
-                buf.push(value);
-            }
-
-            pub fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, Error> {
-                let mut byte = [0u8; 1];
-                cursor.read_exact(&mut byte).map_err(|_| Error::UnexpectedEof)?;
-                Ok(byte[0])
-            }
-
-            pub fn write_i16(buf: &mut Vec<u8>, value: i16) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_i16(cursor: &mut Cursor<&[u8]>) -> Result<i16, Error> {
-                let mut data = [0u8; std::mem::size_of::<i16>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(i16::from_le_bytes(data))
-            }
-
-            pub fn write_u16(buf: &mut Vec<u8>, value: u16) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_u16(cursor: &mut Cursor<&[u8]>) -> Result<u16, Error> {
-                let mut data = [0u8; std::mem::size_of::<u16>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(u16::from_le_bytes(data))
-            }
-
-            pub fn write_i32(buf: &mut Vec<u8>, value: i32) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_i32(cursor: &mut Cursor<&[u8]>) -> Result<i32, Error> {
-                let mut data = [0u8; std::mem::size_of::<i32>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(i32::from_le_bytes(data))
-            }
-
-            pub fn write_u32(buf: &mut Vec<u8>, value: u32) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
-                let mut data = [0u8; std::mem::size_of::<u32>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(u32::from_le_bytes(data))
-            }
-
-            pub fn write_i64(buf: &mut Vec<u8>, value: i64) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, Error> {
-                let mut data = [0u8; std::mem::size_of::<i64>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(i64::from_le_bytes(data))
-            }
-
-            pub fn write_u64(buf: &mut Vec<u8>, value: u64) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64, Error> {
-                let mut data = [0u8; std::mem::size_of::<u64>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(u64::from_le_bytes(data))
-            }
-
-            pub fn write_f32(buf: &mut Vec<u8>, value: f32) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_f32(cursor: &mut Cursor<&[u8]>) -> Result<f32, Error> {
-                let mut data = [0u8; std::mem::size_of::<f32>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(f32::from_le_bytes(data))
-            }
-
-            pub fn write_f64(buf: &mut Vec<u8>, value: f64) {
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-
-            pub fn read_f64(cursor: &mut Cursor<&[u8]>) -> Result<f64, Error> {
-                let mut data = [0u8; std::mem::size_of::<f64>()];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                Ok(f64::from_le_bytes(data))
-            }
-
-            pub fn write_string(buf: &mut Vec<u8>, value: &str, bound: Option<usize>) -> Result<(), Error> {
-                if let Some(limit) = bound {
-                    if value.len() > limit {
-                        return Err(Error::StringTooLong { limit, actual: value.len() });
-                    }
-                }
-                write_u32(buf, value.len() as u32);
-                buf.extend_from_slice(value.as_bytes());
-                Ok(())
-            }
-
-            pub fn read_string(cursor: &mut Cursor<&[u8]>, bound: Option<usize>) -> Result<String, Error> {
-                let len = read_u32(cursor)? as usize;
-                if let Some(limit) = bound {
-                    if len > limit {
-                        return Err(Error::StringTooLong { limit, actual: len });
-                    }
-                }
-                let mut data = vec![0u8; len];
-                cursor.read_exact(&mut data).map_err(|_| Error::UnexpectedEof)?;
-                String::from_utf8(data).map_err(|_| Error::InvalidUtf8)
-            }
-
-            pub fn write_vec<T, F>(buf: &mut Vec<u8>, values: &[T], bound: Option<usize>, mut serializer: F) -> Result<(), Error>
-            where
-                F: FnMut(&T, &mut Vec<u8>) -> Result<(), Error>,
-            {
-                if let Some(limit) = bound {
-                    if values.len() > limit {
-                        return Err(Error::SequenceTooLong { limit, actual: values.len() });
-                    }
-                }
-                write_u32(buf, values.len() as u32);
-                for value in values {
-                    serializer(value, buf)?;
-                }
-                Ok(())
-            }
-
-            pub fn read_vec<T, F>(cursor: &mut Cursor<&[u8]>, bound: Option<usize>, mut parser: F) -> Result<Vec<T>, Error>
-            where
-                F: FnMut(&mut Cursor<&[u8]>) -> Result<T, Error>,
-            {
-                let len = read_u32(cursor)? as usize;
-                if let Some(limit) = bound {
-                    if len > limit {
-                        return Err(Error::SequenceTooLong { limit, actual: len });
-                    }
-                }
-                let mut items = Vec::with_capacity(len);
-                for _ in 0..len {
-                    items.push(parser(cursor)?);
-                }
-                Ok(items)
-            }
+            impl<T> CdrEncoding for T where T: Serialize + DeserializeOwned {}
         }
     }
 
@@ -381,7 +225,6 @@ impl RustGenerator {
             .as_ref()
             .map(|t| self.render_type(t, scope))
             .unwrap_or_else(|| quote!(u32));
-        let serde_attr = self.serde_attr_tokens();
         let variants: Vec<Tokens> = enum_def
             .node
             .enumerators
@@ -440,9 +283,17 @@ impl RustGenerator {
         let ident_from_body = ident.clone();
         quote! {
             $(for doc in docs => $doc)
-            $serde_attr
             #[repr($repr_ty_attr)]
-            #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+            #[derive(
+                Copy,
+                Clone,
+                Debug,
+                PartialEq,
+                Eq,
+                Default,
+                ::serde::Serialize,
+                ::serde::Deserialize
+            )]
             pub enum $ident {
                 $(for v in variants => $v)
             }
@@ -502,54 +353,19 @@ impl RustGenerator {
             })
             .collect();
         let docs = self.doc_attributes(comments);
-        let serde_attr = self.serde_attr_tokens();
-
-        let writes: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let field = member.name.clone();
-                let expr = quote!(&self.$field);
-                self.serialize_value(expr, &member.ty, scope)
-            })
-            .collect();
-
-        let reads: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let field = member.name.clone();
-                let expr = self.deserialize_value(&member.ty, scope);
-                quote! {
-                    let $field = $expr?;
-                }
-            })
-            .collect();
-
-        let field_names: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let name = member.name.clone();
-                quote!($name,)
-            })
-            .collect();
 
         quote! {
             $(for doc in docs => $doc)
-            $serde_attr
-            #[derive(Clone, Debug, PartialEq, Default)]
+            #[derive(
+                Clone,
+                Debug,
+                PartialEq,
+                Default,
+                ::serde::Serialize,
+                ::serde::Deserialize
+            )]
             pub struct $ident {
                 $(for f in fields => $f)
-            }
-
-            impl runtime::BinarySerializable for $ident {
-                fn write_payload(&self, buf: &mut Vec<u8>) -> Result<(), runtime::Error> {
-                    $(for w in writes => $w)
-                    Ok(())
-                }
-
-                fn read_payload(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, runtime::Error> {
-                    $(for r in reads => $r)
-                    Ok(Self { $(for n in field_names => $n) })
-                }
             }
         }
     }
@@ -568,95 +384,6 @@ impl RustGenerator {
         quote! {
             $(for doc in docs => $doc)
             pub const $name: $ty_tokens = $value;
-        }
-    }
-
-    fn serialize_value(&self, expr: Tokens, ty: &Type, scope: &[String]) -> Tokens {
-        match ty {
-            Type::Long => quote!(runtime::write_i32(buf, *$expr);),
-            Type::Short => quote!(runtime::write_i16(buf, *$expr);),
-            Type::UnsignedShort => quote!(runtime::write_u16(buf, *$expr);),
-            Type::UnsignedLong => quote!(runtime::write_u32(buf, *$expr);),
-            Type::LongLong => quote!(runtime::write_i64(buf, *$expr);),
-            Type::UnsignedLongLong => quote!(runtime::write_u64(buf, *$expr);),
-            Type::Float => quote!(runtime::write_f32(buf, *$expr);),
-            Type::Double => quote!(runtime::write_f64(buf, *$expr);),
-            Type::Boolean => quote!(runtime::write_bool(buf, *$expr);),
-            Type::Octet => quote!(buf.push(*$expr);),
-            Type::String { bound } => {
-                let limit = self.bound_tokens(*bound);
-                quote!(runtime::write_string(buf, $expr, $limit)?;)
-            }
-            Type::Sequence { element_type, size } => {
-                let limit = self.bound_tokens(*size);
-                let inner = self.serialize_value(quote!(value), element_type, scope);
-                let element_ty = self.render_type(element_type, scope);
-                quote! {
-                    runtime::write_vec(
-                        buf,
-                        $expr,
-                        $limit,
-                        |value: &$element_ty, buf| {
-                            $inner
-                            Ok(())
-                        },
-                    )?;
-                }
-            }
-            Type::ScopedName(path) => {
-                if let Some(base_type) = self.registry.enum_repr(path) {
-                    let writer = self.writer_fn(base_type);
-                    quote!(runtime::$writer(buf, (*$expr).into());)
-                } else {
-                    quote!(runtime::BinarySerializable::write_payload($expr, buf)?;)
-                }
-            }
-            _ => quote! {
-                compile_error!("unsupported type for serialization in rust generator");
-            },
-        }
-    }
-
-    fn deserialize_value(&self, ty: &Type, scope: &[String]) -> Tokens {
-        match ty {
-            Type::Long => quote!(runtime::read_i32(cursor)),
-            Type::Short => quote!(runtime::read_i16(cursor)),
-            Type::UnsignedShort => quote!(runtime::read_u16(cursor)),
-            Type::UnsignedLong => quote!(runtime::read_u32(cursor)),
-            Type::LongLong => quote!(runtime::read_i64(cursor)),
-            Type::UnsignedLongLong => quote!(runtime::read_u64(cursor)),
-            Type::Float => quote!(runtime::read_f32(cursor)),
-            Type::Double => quote!(runtime::read_f64(cursor)),
-            Type::Boolean => quote!(runtime::read_bool(cursor)),
-            Type::Octet => quote!(runtime::read_u8(cursor)),
-            Type::String { bound } => {
-                let limit = self.bound_tokens(*bound);
-                quote!(runtime::read_string(cursor, $limit))
-            }
-            Type::Sequence { element_type, size } => {
-                let limit = self.bound_tokens(*size);
-                let inner = self.deserialize_value(element_type, scope);
-                quote! {
-                    runtime::read_vec(cursor, $limit, |cursor| $inner)
-                }
-            }
-            Type::ScopedName(path) => {
-                if let Some(base_type) = self.registry.enum_repr(path) {
-                    let reader = self.reader_fn(base_type);
-                    let enum_path = self.relative_path(path, scope);
-                    let repr_ty = self.render_type(base_type, scope);
-                    quote! {{
-                        let raw = runtime::$reader(cursor)?;
-                        <$enum_path as ::core::convert::TryFrom<$repr_ty>>::try_from(raw)
-                    }}
-                } else {
-                    let path_tokens = self.relative_path(path, scope);
-                    quote!(<$path_tokens as runtime::BinarySerializable>::read_payload(cursor))
-                }
-            }
-            _ => quote! {
-                compile_error!("unsupported type for deserialization in rust generator");
-            },
         }
     }
 
@@ -731,45 +458,8 @@ impl RustGenerator {
         }
     }
 
-    fn serde_attr_tokens(&self) -> Tokens {
-        quote!(#[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))])
-    }
-
     fn default_attr_tokens(&self) -> Tokens {
         quote!(#[default])
-    }
-
-    fn bound_tokens(&self, bound: Option<u32>) -> Tokens {
-        match bound {
-            Some(limit) => quote!(Some($(format!("{}usize", limit)))),
-            None => quote!(None),
-        }
-    }
-
-    fn writer_fn(&self, ty: &Type) -> Tokens {
-        match ty {
-            Type::Short => quote!(write_i16),
-            Type::UnsignedShort => quote!(write_u16),
-            Type::Long => quote!(write_i32),
-            Type::UnsignedLong => quote!(write_u32),
-            Type::LongLong => quote!(write_i64),
-            Type::UnsignedLongLong => quote!(write_u64),
-            Type::Octet => quote!(write_u8),
-            _ => quote!(write_u32),
-        }
-    }
-
-    fn reader_fn(&self, ty: &Type) -> Tokens {
-        match ty {
-            Type::Short => quote!(read_i16),
-            Type::UnsignedShort => quote!(read_u16),
-            Type::Long => quote!(read_i32),
-            Type::UnsignedLong => quote!(read_u32),
-            Type::LongLong => quote!(read_i64),
-            Type::UnsignedLongLong => quote!(read_u64),
-            Type::Octet => quote!(read_u8),
-            _ => quote!(read_u32),
-        }
     }
 
     fn relative_path(&self, target: &[String], _scope: &[String]) -> Tokens {
@@ -963,10 +653,6 @@ impl TypeRegistry {
             });
         }
         members
-    }
-
-    fn enum_repr(&self, path: &[String]) -> Option<&Type> {
-        self.enums.get(path)
     }
 
     fn resolve_typedef(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
