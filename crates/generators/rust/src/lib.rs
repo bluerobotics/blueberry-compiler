@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fs, io, path::Path};
 
 use blueberry_ast::{
-    Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef, ModuleDef, StructDef, Type,
-    TypeDef,
+    Annotation, AnnotationParam, Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef,
+    ModuleDef, StructDef, Type, TypeDef,
 };
 use blueberry_codegen_core::{CodegenError, GeneratedFile};
 use genco::lang::rust::Tokens;
@@ -145,18 +145,33 @@ impl RustGenerator {
 
     fn runtime_module_items(&self) -> Tokens {
         quote! {
+            use core::marker::PhantomData;
             use cdr::{deserialize, serialize, CdrLe, Infinite};
             use serde::{de::DeserializeOwned, Serialize};
+            use zenoh::bytes::ZBytes;
+            use zenoh::handlers::fifo::FifoChannelHandler;
+            use zenoh::pubsub::Publisher;
+            use zenoh::{sample::Sample, Error as ZenohError};
+
+            pub type DefaultSubscriber =
+                zenoh::pubsub::Subscriber<FifoChannelHandler<Sample>>;
 
             #[derive(Debug)]
             pub enum Error {
                 Cdr(cdr::Error),
                 InvalidEnum { name: &'static str, value: i64 },
+                Zenoh(ZenohError),
             }
 
             impl From<cdr::Error> for Error {
                 fn from(err: cdr::Error) -> Self {
                     Error::Cdr(err)
+                }
+            }
+
+            impl From<ZenohError> for Error {
+                fn from(err: ZenohError) -> Self {
+                    Error::Zenoh(err)
                 }
             }
 
@@ -174,6 +189,84 @@ impl RustGenerator {
             }
 
             impl<T> CdrEncoding for T where T: Serialize + DeserializeOwned {}
+
+            pub fn format_topic(template: &str) -> String {
+                template.to_string()
+            }
+
+            pub fn from_sample<T: CdrEncoding>(sample: &Sample) -> Result<T, Error> {
+                let payload = sample.payload().to_bytes();
+                T::from_payload(&payload)
+            }
+
+            pub fn to_zbytes<T: CdrEncoding>(value: &T) -> Result<ZBytes, Error> {
+                value.to_payload().map(ZBytes::from)
+            }
+
+            pub async fn publish_with<T: CdrEncoding>(
+                publisher: &Publisher<'_>,
+                value: &T,
+            ) -> Result<(), Error> {
+                let payload = to_zbytes(value)?;
+                publisher.put(payload).await.map_err(Error::from)
+            }
+
+            pub async fn recv_decoded<T: CdrEncoding>(
+                subscriber: &DefaultSubscriber,
+            ) -> Result<T, Error> {
+                let sample = subscriber.recv_async().await?;
+                from_sample(&sample)
+            }
+
+            pub struct TypedPublisher<'a, T> {
+                inner: Publisher<'a>,
+                _marker: PhantomData<&'a T>,
+            }
+
+            impl<'a, T> TypedPublisher<'a, T>
+            where
+                T: CdrEncoding,
+            {
+                pub fn new(inner: Publisher<'a>) -> Self {
+                    Self {
+                        inner,
+                        _marker: PhantomData,
+                    }
+                }
+
+                pub fn inner(&self) -> &Publisher<'a> {
+                    &self.inner
+                }
+
+                pub async fn publish(&self, value: &T) -> Result<(), Error> {
+                    publish_with(&self.inner, value).await
+                }
+            }
+
+            pub struct TypedSubscriber<T> {
+                inner: DefaultSubscriber,
+                _marker: PhantomData<T>,
+            }
+
+            impl<T> TypedSubscriber<T>
+            where
+                T: CdrEncoding,
+            {
+                pub fn new(inner: DefaultSubscriber) -> Self {
+                    Self {
+                        inner,
+                        _marker: PhantomData,
+                    }
+                }
+
+                pub fn inner(&self) -> &DefaultSubscriber {
+                    &self.inner
+                }
+
+                pub async fn recv(&self) -> Result<T, Error> {
+                    recv_decoded(&self.inner).await
+                }
+            }
         }
     }
 
@@ -322,7 +415,13 @@ impl RustGenerator {
         let mut path = scope.to_vec();
         path.push(struct_def.node.name.clone());
         let members = self.registry.collect_struct_members(&path);
-        self.emit_struct_like(&ident, &members, &struct_def.comments, scope)
+        self.emit_struct_like(
+            &ident,
+            &members,
+            &struct_def.comments,
+            &struct_def.annotations,
+            scope,
+        )
     }
 
     fn emit_message(&self, message_def: &Commented<MessageDef>, scope: &[String]) -> Tokens {
@@ -330,7 +429,13 @@ impl RustGenerator {
         let mut path = scope.to_vec();
         path.push(message_def.node.name.clone());
         let members = self.registry.collect_message_members(&path);
-        self.emit_struct_like(&ident, &members, &message_def.comments, scope)
+        self.emit_struct_like(
+            &ident,
+            &members,
+            &message_def.comments,
+            &message_def.annotations,
+            scope,
+        )
     }
 
     fn emit_struct_like(
@@ -338,6 +443,7 @@ impl RustGenerator {
         ident: &str,
         members: &[ResolvedMember],
         comments: &[String],
+        annotations: &[Annotation],
         scope: &[String],
     ) -> Tokens {
         let fields: Vec<Tokens> = members
@@ -353,6 +459,7 @@ impl RustGenerator {
             })
             .collect();
         let docs = self.doc_attributes(comments);
+        let topic_impl = self.topic_impl(ident, annotations);
 
         quote! {
             $(for doc in docs => $doc)
@@ -367,6 +474,96 @@ impl RustGenerator {
             pub struct $ident {
                 $(for f in fields => $f)
             }
+
+            $topic_impl
+        }
+    }
+
+    fn topic_impl(&self, ident: &str, annotations: &[Annotation]) -> Tokens {
+        let Some(topic) = self.topic_value(annotations) else {
+            return Tokens::new();
+        };
+        let topic_literal = format!("{topic:?}");
+
+        quote! {
+            impl $ident {
+                pub const TOPIC_TEMPLATE: &'static str = $topic_literal;
+                pub const SCHEMA: &'static str = concat!("blueberry.", stringify!($ident));
+
+                pub fn topic() -> String {
+                    runtime::format_topic(Self::TOPIC_TEMPLATE)
+                }
+
+                pub async fn declare_publisher<'a>(
+                    session: &'a zenoh::Session,
+                ) -> Result<runtime::TypedPublisher<'a, Self>, runtime::Error> {
+                    let topic = Self::topic();
+                    let encoding = zenoh::bytes::Encoding::APPLICATION_CDR
+                        .with_schema(Self::SCHEMA);
+                    let publisher = session
+                        .declare_publisher(topic)
+                        .encoding(encoding)
+                        .await
+                        .map_err(runtime::Error::from)?;
+
+                    Ok(runtime::TypedPublisher::new(publisher))
+                }
+
+                pub async fn publish_with<'a>(
+                    &self,
+                    publisher: &runtime::TypedPublisher<'a, Self>,
+                ) -> Result<(), runtime::Error> {
+                    publisher.publish(self).await
+                }
+
+                pub async fn declare_subscriber<'a>(
+                    session: &'a zenoh::Session,
+                ) -> Result<runtime::TypedSubscriber<Self>, runtime::Error> {
+                    let topic = Self::topic();
+                    let subscriber = session
+                        .declare_subscriber(topic)
+                        .await
+                        .map_err(runtime::Error::from)?;
+
+                    Ok(runtime::TypedSubscriber::new(subscriber))
+                }
+
+                pub async fn recv(
+                    subscriber: &runtime::TypedSubscriber<Self>,
+                ) -> Result<Self, runtime::Error> {
+                    subscriber.recv().await
+                }
+            }
+        }
+    }
+
+    fn topic_value(&self, annotations: &[Annotation]) -> Option<String> {
+        annotations
+            .iter()
+            .find(|annotation| {
+                annotation
+                    .name
+                    .last()
+                    .map(|segment| segment.eq_ignore_ascii_case("topic"))
+                    .unwrap_or(false)
+            })
+            .and_then(|annotation| self.annotation_string(annotation))
+    }
+
+    fn annotation_string(&self, annotation: &Annotation) -> Option<String> {
+        annotation.params.iter().find_map(|param| match param {
+            AnnotationParam::Named { name, value } if name.eq_ignore_ascii_case("value") => {
+                self.const_string(value)
+            }
+            AnnotationParam::Positional(value) => self.const_string(value),
+            AnnotationParam::Named { value, .. } => self.const_string(value),
+        })
+    }
+
+    fn const_string(&self, value: &ConstValue) -> Option<String> {
+        match value {
+            ConstValue::String(text) => Some(text.clone()),
+            _ => None,
         }
     }
 
@@ -749,5 +946,48 @@ mod tests {
             }
             other => panic!("expected scoped name, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn emits_topic_helpers_for_topic_annotations() {
+        let definitions = load_fixture("crates/parser/tests/fixtures/message_default.idl");
+        let generator = RustGenerator::new(&definitions);
+        let root = generator.generate_root(&definitions);
+
+        assert!(
+            root.contains("TOPIC_TEMPLATE"),
+            "generated code should include topic template"
+        );
+        assert!(
+            root.contains("blueberry/devices/status"),
+            "topic literal should be embedded"
+        );
+        assert!(
+            root.contains("declare_publisher"),
+            "publisher helper should be generated"
+        );
+        assert!(
+            root.contains("declare_subscriber"),
+            "subscriber helper should be generated"
+        );
+        assert!(
+            root.contains("TypedSubscriber"),
+            "subscriber helpers should be typed"
+        );
+    }
+
+    #[test]
+    fn runtime_includes_zenoh_helpers() {
+        let generator = RustGenerator::new(&[]);
+        let runtime = generator.generate_runtime();
+
+        assert!(
+            runtime.contains("format_topic"),
+            "runtime should expose topic formatter"
+        );
+        assert!(
+            runtime.contains("publish_with"),
+            "runtime should expose publish helper"
+        );
     }
 }

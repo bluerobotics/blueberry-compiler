@@ -50,6 +50,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 cdr = "0.2"
+zenoh = "1.6.2"
 "#,
     )
     .expect("failed to write Cargo.toml");
