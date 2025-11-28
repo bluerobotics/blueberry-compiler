@@ -1,0 +1,13 @@
+@topic(value = "blueberry/devices/status")
+struct Person {
+  @default("Potato")
+  string name;
+  @default(0x1234)
+  long age;
+  @default(1)
+  boolean isActive;
+  @default("maisquenada")
+  string<16> codename;
+  @default(0, 1, 2, 3, 4, 0xffff, 6, 7)
+  long readings[8];
+};

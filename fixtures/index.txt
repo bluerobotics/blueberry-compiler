@@ -11,6 +11,7 @@ imports.idl
 inheritance.idl
 integer_literals.idl
 message_basic.idl
+message_default.idl
 module_only.idl
 scoped_modules.idl
 struct_basic.idl
