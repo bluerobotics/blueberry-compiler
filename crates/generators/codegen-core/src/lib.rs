@@ -2,6 +2,9 @@ use blueberry_ast::{
     Annotation, AnnotationParam, Commented, ConstValue, Definition, MessageDef, Type,
 };
 
+pub mod type_registry;
+pub use type_registry::{ResolvedMember, TypeRegistry, map_builtin_ident};
+
 pub const DEFAULT_MODULE_KEY: u16 = 0x4242;
 pub const MESSAGE_HEADER_SIZE: usize = 8;
 

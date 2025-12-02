@@ -1,227 +1,528 @@
-use blueberry_ast::Definition;
-use blueberry_codegen_core::{
-    CodegenError, GeneratedFile, MessageSpec, PrimitiveType, class_name, collect_messages,
-    quoted_string,
+use blueberry_ast::{
+    Annotation, AnnotationParam, Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef,
+    StructDef, Type, TypeDef,
 };
+use blueberry_codegen_core::{CodegenError, DEFAULT_MODULE_KEY, GeneratedFile, TypeRegistry};
 use genco::lang::c::Tokens;
 use genco::quote;
 
 const OUTPUT_PATH: &str = "cpp/messages.hpp";
 
 pub fn generate(definitions: &[Definition]) -> Result<Vec<GeneratedFile>, CodegenError> {
-    let messages = collect_messages(definitions)?;
-    if messages.is_empty() {
-        return Ok(Vec::new());
-    }
-    let generator = CppGenerator::new(&messages);
-    let contents = generator.render();
+    let generator = CppGenerator::new(definitions);
+    let contents = generator.render(definitions)?;
+
     Ok(vec![GeneratedFile {
         path: OUTPUT_PATH.to_string(),
         contents,
     }])
 }
 
-struct CppGenerator<'a> {
-    messages: &'a [MessageSpec],
+struct CppGenerator {
+    registry: TypeRegistry,
 }
 
-impl<'a> CppGenerator<'a> {
-    fn new(messages: &'a [MessageSpec]) -> Self {
-        Self { messages }
+impl CppGenerator {
+    fn new(definitions: &[Definition]) -> Self {
+        Self {
+            registry: TypeRegistry::new(definitions),
+        }
     }
 
-    fn render(&self) -> String {
-        let message_blocks: Vec<Tokens> =
-            self.messages.iter().map(|m| self.emit_message(m)).collect();
-
+    fn render(&self, definitions: &[Definition]) -> Result<String, CodegenError> {
+        let defs = self.emit_definitions(definitions, &mut Vec::new(), DEFAULT_MODULE_KEY)?;
         let helpers = helpers_tokens();
-        let header = message_header();
         let tokens: Tokens = quote! {
             #pragma once
 
             #include <array>
+            #include <cstddef>
             #include <cstdint>
             #include <cstring>
             #include <span>
             #include <stdexcept>
             #include <string>
             #include <string_view>
+            #include <type_traits>
             #include <utility>
+            #include <vector>
 
-            namespace blueberry::messages {
+            namespace blueberry_generated {
 
             $helpers
 
-            $header
-
-            $(for block in &message_blocks =>
-                $block
+            $(for def in defs =>
+                $def
 
             )
 
-            } // namespace blueberry::messages
+            } // namespace blueberry_generated
         };
 
-        tokens.to_file_string().expect("render cpp output")
+        Ok(tokens.to_file_string().expect("render cpp output"))
     }
 
-    fn emit_message(&self, message: &MessageSpec) -> Tokens {
-        let class_ident = class_name(&message.scope, &message.name);
-        let class_ident_ref = class_ident.as_str();
-        let topic_literal = quoted_string(&message.topic);
-        let module_key = message.module_key;
-        let message_key = message.message_key;
-        let struct_size = message.field_payload_size();
-        let padded_size = message.padded_payload_size();
-        let payload_words = message.payload_words();
+    fn emit_definitions(
+        &self,
+        defs: &[Definition],
+        scope: &mut Vec<String>,
+        module_key: u16,
+    ) -> Result<Vec<Tokens>, CodegenError> {
+        let mut out = Vec::new();
+        let mut message_keys = MessageKeyGen::default();
 
-        let fields = &message.fields;
-        let ctor_params: Tokens = quote! {
-            $(for field in fields join (, ) =>
-                $(cpp_field_type(field.primitive)) $(field.name.clone()) = $(cpp_default(field.primitive))
-            )
-        };
-        let ctor_inits: Tokens = quote! {
-            $(for field in fields join (, ) =>
-                $(field.name.clone())_($(field.name.clone()))
-            )
-        };
+        for def in defs {
+            match def {
+                Definition::ModuleDef(module) => {
+                    let module_key =
+                        annotation_u16(&module.annotations, "module_key").unwrap_or(module_key);
+                    scope.push(module.node.name.clone());
+                    let nested =
+                        self.emit_definitions(&module.node.definitions, scope, module_key)?;
+                    scope.pop();
 
-        let accessors: Tokens = quote! {
-            $(for field in fields =>
-                [[nodiscard]] $(cpp_field_type(field.primitive)) $(field.name.clone())() const noexcept { return $(field.name.clone())_; }
-                void set_$(field.name.clone())($(cpp_field_type(field.primitive)) value) noexcept { $(field.name.clone())_ = value; }
-            )
-        };
+                    let name = &module.node.name;
+                    out.push(quote! {
+                        namespace $name {
+                        $(for item in nested =>
+                            $item
 
-        let serialize_body: Tokens = quote! {
-            std::array<std::uint8_t, kPaddedSize> payload{};
-            std::size_t offset = 0;
-            $(for field in fields =>
-                $(cpp_writer(field.primitive))($(field.name.clone())_, payload.data() + offset);
-                offset += $(field.primitive.size());
-            )
-            return payload;
-        };
-
-        let deserialize_body: Tokens = if fields.is_empty() {
-            quote! { return $class_ident_ref(); }
-        } else {
-            let values: Tokens = quote! {
-                $(for field in fields =>
-                    auto value_$(field.name.clone()) = $(cpp_reader(field.primitive))(payload.data() + offset);
-                    offset += $(field.primitive.size());
-                )
-            };
-            let args: Tokens =
-                quote! { $(for field in fields join (, ) => value_$(field.name.clone())) };
-            quote! {
-                std::size_t offset = 0;
-                $values
-                return $class_ident_ref($args);
+                        )
+                        } // namespace $name
+                    });
+                }
+                Definition::EnumDef(enum_def) => {
+                    out.push(self.emit_enum(enum_def, scope));
+                    out.push(quote! { $['\n'] });
+                }
+                Definition::StructDef(struct_def) => {
+                    out.push(self.emit_struct(struct_def, scope));
+                    out.push(quote! { $['\n'] });
+                }
+                Definition::MessageDef(message_def) => {
+                    let message_key = annotation_u16(&message_def.annotations, "message_key")
+                        .unwrap_or_else(|| message_keys.next());
+                    out.push(self.emit_message(message_def, scope, module_key, message_key)?);
+                    out.push(quote! { $['\n'] });
+                }
+                Definition::ConstDef(const_def) => {
+                    out.push(self.emit_const(const_def, scope));
+                }
+                Definition::TypeDef(typedef_def) => {
+                    out.push(self.emit_typedef(typedef_def, scope));
+                }
+                Definition::ImportDef(_) => {}
             }
-        };
+        }
 
-        let members: Tokens = quote! {
-            $(for field in fields =>
-                $(cpp_field_type(field.primitive)) $(field.name.clone())_{};$['\n']
-            )
-        };
+        Ok(out)
+    }
+
+    fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> Tokens {
+        let scoped = &enum_def.node.name;
+        let base = enum_def
+            .node
+            .base_type
+            .clone()
+            .unwrap_or(Type::UnsignedLong);
+        let base_ty = self.cpp_type(&base, scope);
+        let members: Vec<Tokens> = enum_def
+            .node
+            .enumerators
+            .iter()
+            .map(|member| {
+                if let Some(ConstValue::Integer(value)) = &member.value {
+                    quote!( $(member.name.clone()) = $(value.value) )
+                } else {
+                    quote!( $(member.name.clone()) )
+                }
+            })
+            .collect();
 
         quote! {
-            class $class_ident_ref {
-            public:
+            enum class $scoped : $base_ty {
+                $(for m in members join (, ) => $m)
+            };
+        }
+    }
+
+    fn emit_struct(&self, struct_def: &Commented<StructDef>, scope: &[String]) -> Tokens {
+        let mut path = scope.to_vec();
+        path.push(struct_def.node.name.clone());
+        let members = self.registry.collect_struct_members(&path);
+        let fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let ty = self.cpp_type(&member.ty, scope);
+                let name = &member.name;
+                quote!( $ty $name{}; )
+            })
+            .collect();
+        let serialize_fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| self.serialize_value(&member.name, &member.ty, scope, quote!(writer)))
+            .collect();
+        let deserialize_fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let var_name = format!("value_{}", member.name);
+                let read_expr = self.deserialize_value(&member.ty, scope, quote!(reader));
+                quote! {
+                    auto $var_name = $read_expr;
+                }
+            })
+            .collect();
+        let assignments: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let var_name = format!("value_{}", member.name);
+                let field = &member.name;
+                quote!( result.$field = $var_name; )
+            })
+            .collect();
+
+        let name = &struct_def.node.name;
+        quote! {
+            struct $name {
+                $(
+                    for field in &fields join ($['\r']) => $field
+                )
+
+                [[nodiscard]] std::vector<std::uint8_t> to_payload() const {
+                    CdrWriter writer;
+                    serialize(writer);
+                    return writer.buffer;
+                }
+
+                void serialize(CdrWriter &writer) const {
+                    $(for s in &serialize_fields => $s$['\r'])
+                }
+
+                [[nodiscard]] static $name from_payload(std::span<const std::uint8_t> payload) {
+                    CdrReader reader(payload);
+                    return read(reader);
+                }
+
+                [[nodiscard]] static $name read(CdrReader &reader) {
+                    $(for d in &deserialize_fields => $d$['\r'])
+                    $name result{};
+                    $(for a in &assignments => $a$['\r'])
+                    return result;
+                }
+            };
+        }
+    }
+
+    fn emit_message(
+        &self,
+        message_def: &Commented<MessageDef>,
+        scope: &[String],
+        module_key: u16,
+        message_key: u16,
+    ) -> Result<Tokens, CodegenError> {
+        let topic = annotation_string(&message_def.annotations, "topic").ok_or(
+            CodegenError::MissingTopic {
+                message: scoped_name(scope, &message_def.node.name),
+            },
+        )?;
+        let mut path = scope.to_vec();
+        path.push(message_def.node.name.clone());
+        let members = self.registry.collect_message_members(&path);
+        let fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let ty = self.cpp_type(&member.ty, scope);
+                let name = &member.name;
+                quote!( $ty $name{}; )
+            })
+            .collect();
+        let serialize_fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| self.serialize_value(&member.name, &member.ty, scope, quote!(writer)))
+            .collect();
+        let deserialize_fields: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let var_name = format!("value_{}", member.name);
+                let read_expr = self.deserialize_value(&member.ty, scope, quote!(reader));
+                quote! {
+                    auto $var_name = $read_expr;
+                }
+            })
+            .collect();
+        let assignments: Vec<Tokens> = members
+            .iter()
+            .map(|member| {
+                let var_name = format!("value_{}", member.name);
+                let field = &member.name;
+                quote!( result.$field = $var_name; )
+            })
+            .collect();
+
+        let name = &message_def.node.name;
+        let mut schema = scope.join(".");
+        if !schema.is_empty() {
+            schema.push('.');
+        }
+        schema.push_str(name);
+        let topic_literal = quoted_string(&topic);
+        let schema_literal = quoted_string(&schema);
+
+        Ok(quote! {
+            struct $name {
                 static constexpr std::uint16_t kModuleKey = $module_key;
                 static constexpr std::uint16_t kMessageKey = $message_key;
-                static constexpr std::size_t kStructSize = $struct_size;
-                static constexpr std::size_t kPaddedSize = $padded_size;
-                static constexpr std::size_t kPayloadWords = $payload_words;
                 static constexpr std::string_view kTopicTemplate = $topic_literal;
+                static constexpr std::string_view kSchema = $schema_literal;
 
-                $class_ident_ref() = default;
-                $(if !fields.is_empty() {
-                    explicit $class_ident_ref($ctor_params) : $ctor_inits {}
-                })
+                $(
+                    for field in &fields =>
+                        $field
+                )
 
-                $accessors
-
-                [[nodiscard]] std::array<std::uint8_t, kPaddedSize> Serialize() const {
-                    $serialize_body
+                [[nodiscard]] std::vector<std::uint8_t> to_payload() const {
+                    CdrWriter writer;
+                    serialize(writer);
+                    return writer.buffer;
                 }
 
-                [[nodiscard]] static $class_ident_ref Deserialize(std::span<const std::uint8_t> payload) {
-                    if (payload.size() < kStructSize) { throw std::runtime_error("payload shorter than struct"); }
-                    $deserialize_body
+                void serialize(CdrWriter &writer) const {
+                    $(for s in &serialize_fields => $s$['\r'])
                 }
 
-                [[nodiscard]] static $class_ident_ref FromFrame(std::span<const std::uint8_t> frame) {
-                    auto header = MessageHeader::Parse(frame);
-                    const auto payload_len = static_cast<std::size_t>(header.payload_words) * 4u;
-                    if (frame.size() < MessageHeader::kSize + payload_len) { throw std::runtime_error("frame shorter than payload"); }
-                    auto payload = frame.subspan(MessageHeader::kSize, payload_len);
-                    return Deserialize(payload);
+                [[nodiscard]] static $name from_payload(std::span<const std::uint8_t> payload) {
+                    CdrReader reader(payload);
+                    return read(reader);
                 }
 
-                template <typename Session>
-                void Publish(Session &session, std::string_view device_type, std::string_view nid) const {
-                    auto payload = Serialize();
-                    MessageHeader header{static_cast<std::uint16_t>(kPayloadWords), 0, kModuleKey, kMessageKey};
-                    auto header_bytes = header.Pack();
-                    std::array<std::uint8_t, MessageHeader::kSize + kPaddedSize> frame{};
-                    std::memcpy(frame.data(), header_bytes.data(), header_bytes.size());
-                    if constexpr (kPaddedSize > 0) { std::memcpy(frame.data() + MessageHeader::kSize, payload.data(), payload.size()); }
-                    session.put(FormatTopic(device_type, nid), std::span<const std::uint8_t>(frame.data(), frame.size()));
+                [[nodiscard]] static $name read(CdrReader &reader) {
+                    $(for d in &deserialize_fields => $d$['\r'])
+
+                    $name result{};
+                    $(for a in &assignments join ($['\r']) => $a)
+                    return result;
                 }
 
-                template <typename Session, typename Callback>
-                static void Subscribe(Session &session, std::string_view device_type, std::string_view nid, Callback &&callback) {
-                    session.subscribe(FormatTopic(device_type, nid), [cb = std::forward<Callback>(callback)](std::span<const std::uint8_t> frame) { cb(FromFrame(frame)); });
+                [[nodiscard]] static std::string topic() {
+                    return format_topic(std::string(kTopicTemplate));
                 }
-
-            private:
-                static std::string FormatTopic(std::string_view device_type, std::string_view nid) {
-                    std::string topic = std::string(kTopicTemplate);
-                    replace_placeholder(topic, "{{device_type}}", device_type);
-                    replace_placeholder(topic, "{{nid}}", nid);
-                    return topic;
-                }
-
-                $members
             };
+        })
+    }
+
+    fn emit_const(&self, const_def: &Commented<ConstDef>, scope: &[String]) -> Tokens {
+        let name = &const_def.node.name;
+        let ty = self.cpp_type(&const_def.node.const_type, scope);
+        let value = const_literal(&const_def.node.value);
+        quote!( inline constexpr $ty $name = $value; )
+    }
+
+    fn emit_typedef(&self, typedef_def: &Commented<TypeDef>, scope: &[String]) -> Tokens {
+        let name = &typedef_def.node.name;
+        let base = self.cpp_type(&typedef_def.node.base_type, scope);
+        quote!( using $name = $base; )
+    }
+
+    fn cpp_type(&self, ty: &Type, scope: &[String]) -> Tokens {
+        match self.registry.resolve_type(ty, scope) {
+            Type::Float => quote!(float),
+            Type::Double => quote!(double),
+            Type::LongDouble => quote!(long double),
+            Type::Long => quote!(std::int32_t),
+            Type::UnsignedLong => quote!(std::uint32_t),
+            Type::LongLong => quote!(std::int64_t),
+            Type::UnsignedLongLong => quote!(std::uint64_t),
+            Type::Short => quote!(std::int16_t),
+            Type::UnsignedShort => quote!(std::uint16_t),
+            Type::Octet => quote!(std::uint8_t),
+            Type::Boolean => quote!(bool),
+            Type::Char => quote!(char),
+            Type::String { .. } => quote!(std::string),
+            Type::Sequence { element_type, .. } => {
+                let inner = self.cpp_type(&element_type, scope);
+                quote!(std::vector<$inner>)
+            }
+            Type::Array {
+                element_type,
+                dimensions,
+            } => {
+                let mut elem = *element_type;
+                for _ in dimensions {
+                    elem = Type::Sequence {
+                        element_type: Box::new(elem),
+                        size: None,
+                    };
+                }
+                self.cpp_type(&elem, scope)
+            }
+            Type::ScopedName(path) => {
+                let scoped = absolute_path(&path);
+                quote!( $scoped )
+            }
+            Type::WString | Type::WChar => quote!(std::u16string),
+        }
+    }
+
+    fn serialize_value(&self, name: &str, ty: &Type, scope: &[String], writer: Tokens) -> Tokens {
+        match self.registry.resolve_type(ty, scope) {
+            Type::Boolean => quote!( $writer.write_bool($name); ),
+            Type::Char => quote!( $writer.write_char($name); ),
+            Type::Octet => quote!( $writer.write_u8($name); ),
+            Type::Short => quote!( $writer.write_i16($name); ),
+            Type::UnsignedShort => quote!( $writer.write_u16($name); ),
+            Type::Long => quote!( $writer.write_i32($name); ),
+            Type::UnsignedLong => quote!( $writer.write_u32($name); ),
+            Type::LongLong => quote!( $writer.write_i64($name); ),
+            Type::UnsignedLongLong => quote!( $writer.write_u64($name); ),
+            Type::Float => quote!( $writer.write_f32($name); ),
+            Type::Double => quote!( $writer.write_f64($name); ),
+            Type::LongDouble => quote!( $writer.write_f64(static_cast<double>($name)); ),
+            Type::String { .. } => quote!( $writer.write_string($name); ),
+            Type::Sequence { element_type, .. } => {
+                let inner = self.serialize_value("item", &element_type, scope, quote!(writer));
+                quote! {
+                    $writer.write_sequence($name, [](CdrWriter &writer, const auto &item) {
+                        $inner
+                    });
+                }
+            }
+            Type::Array {
+                element_type,
+                dimensions,
+            } => {
+                let mut elem = *element_type;
+                for _ in dimensions {
+                    elem = Type::Sequence {
+                        element_type: Box::new(elem),
+                        size: None,
+                    };
+                }
+                self.serialize_value(name, &elem, scope, writer)
+            }
+            Type::ScopedName(path) => {
+                if let Some(base) = self.registry.enum_base(&path) {
+                    let base_ty = self.cpp_type(base, scope);
+                    let write_fn = match base {
+                        Type::UnsignedShort => quote!(write_u16),
+                        Type::Short => quote!(write_i16),
+                        Type::UnsignedLong => quote!(write_u32),
+                        Type::Long => quote!(write_i32),
+                        Type::UnsignedLongLong => quote!(write_u64),
+                        Type::LongLong => quote!(write_i64),
+                        Type::Octet => quote!(write_u8),
+                        Type::Boolean => quote!(write_bool),
+                        Type::Char => quote!(write_char),
+                        Type::Float => quote!(write_f32),
+                        Type::Double => quote!(write_f64),
+                        _ => quote!(write_u32),
+                    };
+                    quote! {
+                        $writer.$write_fn(static_cast<$base_ty>($name));
+                    }
+                } else {
+                    quote!( $name.serialize($writer); )
+                }
+            }
+            Type::WString | Type::WChar => quote!( /* unsupported wide string */ ),
+        }
+    }
+
+    fn deserialize_value(&self, ty: &Type, scope: &[String], reader: Tokens) -> Tokens {
+        match self.registry.resolve_type(ty, scope) {
+            Type::Boolean => quote!( $reader.read_bool() ),
+            Type::Char => quote!( $reader.read_char() ),
+            Type::Octet => quote!( $reader.read_u8() ),
+            Type::Short => quote!( $reader.read_i16() ),
+            Type::UnsignedShort => quote!( $reader.read_u16() ),
+            Type::Long => quote!( $reader.read_i32() ),
+            Type::UnsignedLong => quote!( $reader.read_u32() ),
+            Type::LongLong => quote!( $reader.read_i64() ),
+            Type::UnsignedLongLong => quote!( $reader.read_u64() ),
+            Type::Float => quote!( $reader.read_f32() ),
+            Type::Double => quote!( $reader.read_f64() ),
+            Type::LongDouble => quote!( static_cast<long double>($reader.read_f64()) ),
+            Type::String { .. } => quote!( $reader.read_string() ),
+            Type::Sequence { element_type, .. } => {
+                let inner = self.deserialize_value(&element_type, scope, quote!(reader));
+                quote! {
+                    $reader.read_sequence([&](CdrReader &reader) {
+                        return $inner;
+                    })
+                }
+            }
+            Type::Array {
+                element_type,
+                dimensions,
+            } => {
+                let mut elem = *element_type;
+                for _ in dimensions {
+                    elem = Type::Sequence {
+                        element_type: Box::new(elem),
+                        size: None,
+                    };
+                }
+                self.deserialize_value(&elem, scope, reader)
+            }
+            Type::ScopedName(path) => {
+                if let Some(base) = self.registry.enum_base(&path) {
+                    let read_expr = match base {
+                        Type::UnsignedShort => quote!(read_u16),
+                        Type::Short => quote!(read_i16),
+                        Type::UnsignedLong => quote!(read_u32),
+                        Type::Long => quote!(read_i32),
+                        Type::UnsignedLongLong => quote!(read_u64),
+                        Type::LongLong => quote!(read_i64),
+                        Type::Octet => quote!(read_u8),
+                        Type::Boolean => quote!(read_bool),
+                        Type::Char => quote!(read_char),
+                        Type::Float => quote!(read_f32),
+                        Type::Double => quote!(read_f64),
+                        _ => quote!(read_u32),
+                    };
+                    let scoped = absolute_path(&path);
+                    quote! {
+                        static_cast<$scoped>($reader.$read_expr())
+                    }
+                } else {
+                    let scoped = absolute_path(&path);
+                    quote!( $scoped::read($reader) )
+                }
+            }
+            Type::WString | Type::WChar => quote!(std::u16string()),
         }
     }
 }
 
 fn helpers_tokens() -> Tokens {
     quote! {
-        inline void write_u16(std::uint16_t value, std::uint8_t *out) {
+        inline void write_u16_raw(std::uint16_t value, std::uint8_t *out) {
           out[0] = static_cast<std::uint8_t>(value & 0xffu);
           out[1] = static_cast<std::uint8_t>((value >> 8) & 0xffu);
         }
 
-        inline std::uint16_t read_u16(const std::uint8_t *in) {
+        inline std::uint16_t read_u16_raw(const std::uint8_t *in) {
           return static_cast<std::uint16_t>(static_cast<std::uint16_t>(in[0]) |
                                            static_cast<std::uint16_t>(in[1] << 8));
         }
 
-        inline void write_u32(std::uint32_t value, std::uint8_t *out) {
+        inline void write_u32_raw(std::uint32_t value, std::uint8_t *out) {
           for (int i = 0; i < 4; ++i) {
             out[i] = static_cast<std::uint8_t>((value >> (8 * i)) & 0xffu);
           }
         }
 
-        inline std::uint32_t read_u32(const std::uint8_t *in) {
+        inline std::uint32_t read_u32_raw(const std::uint8_t *in) {
           return static_cast<std::uint32_t>(in[0]) | (static_cast<std::uint32_t>(in[1]) << 8) |
                  (static_cast<std::uint32_t>(in[2]) << 16) | (static_cast<std::uint32_t>(in[3]) << 24);
         }
 
-        inline void write_u64(std::uint64_t value, std::uint8_t *out) {
+        inline void write_u64_raw(std::uint64_t value, std::uint8_t *out) {
           for (int i = 0; i < 8; ++i) {
             out[i] = static_cast<std::uint8_t>((value >> (8 * i)) & 0xffu);
           }
         }
 
-        inline std::uint64_t read_u64(const std::uint8_t *in) {
+        inline std::uint64_t read_u64_raw(const std::uint8_t *in) {
           std::uint64_t result = 0;
           for (int i = 0; i < 8; ++i) {
             result |= static_cast<std::uint64_t>(in[i]) << (8 * i);
@@ -229,157 +530,343 @@ fn helpers_tokens() -> Tokens {
           return result;
         }
 
-        inline void write_bool(bool value, std::uint8_t *out) { out[0] = value ? 1u : 0u; }
-        inline bool read_bool(const std::uint8_t *in) { return in[0] != 0; }
-        inline void write_char(char value, std::uint8_t *out) { out[0] = static_cast<std::uint8_t>(value); }
-        inline char read_char(const std::uint8_t *in) { return static_cast<char>(in[0]); }
-        inline void write_u8(std::uint8_t value, std::uint8_t *out) { out[0] = value; }
-        inline std::uint8_t read_u8(const std::uint8_t *in) { return in[0]; }
-        inline void write_i16(std::int16_t value, std::uint8_t *out) { write_u16(static_cast<std::uint16_t>(value), out); }
-        inline std::int16_t read_i16(const std::uint8_t *in) { return static_cast<std::int16_t>(read_u16(in)); }
-        inline void write_u16_val(std::uint16_t value, std::uint8_t *out) { write_u16(value, out); }
-        inline std::uint16_t read_u16_val(const std::uint8_t *in) { return read_u16(in); }
-        inline void write_i32(std::int32_t value, std::uint8_t *out) { write_u32(static_cast<std::uint32_t>(value), out); }
-        inline std::int32_t read_i32(const std::uint8_t *in) { return static_cast<std::int32_t>(read_u32(in)); }
-        inline void write_u32_val(std::uint32_t value, std::uint8_t *out) { write_u32(value, out); }
-        inline std::uint32_t read_u32_val(const std::uint8_t *in) { return read_u32(in); }
-        inline void write_i64(std::int64_t value, std::uint8_t *out) { write_u64(static_cast<std::uint64_t>(value), out); }
-        inline std::int64_t read_i64(const std::uint8_t *in) { return static_cast<std::int64_t>(read_u64(in)); }
-        inline void write_u64_val(std::uint64_t value, std::uint8_t *out) { write_u64(value, out); }
-        inline std::uint64_t read_u64_val(const std::uint8_t *in) { return read_u64(in); }
+        struct CdrWriter {
+          std::vector<std::uint8_t> buffer;
 
-        inline void write_f32(float value, std::uint8_t *out) {
-          std::uint32_t bits;
-          std::memcpy(&bits, &value, sizeof(bits));
-          write_u32(bits, out);
-        }
-
-        inline float read_f32(const std::uint8_t *in) {
-          std::uint32_t bits = read_u32(in);
-          float value;
-          std::memcpy(&value, &bits, sizeof(value));
-          return value;
-        }
-
-        inline void write_f64(double value, std::uint8_t *out) {
-          std::uint64_t bits;
-          std::memcpy(&bits, &value, sizeof(bits));
-          write_u64(bits, out);
-        }
-
-        inline double read_f64(const std::uint8_t *in) {
-          std::uint64_t bits = read_u64(in);
-          double value;
-          std::memcpy(&value, &bits, sizeof(value));
-          return value;
-        }
-
-        inline void replace_placeholder(std::string &topic, std::string_view placeholder, std::string_view value) {
-          const std::string needle(placeholder);
-          const std::string replacement(value);
-          std::size_t pos = topic.find(needle);
-          while (pos != std::string::npos) {
-            topic.replace(pos, needle.size(), replacement);
-            pos = topic.find(needle, pos + replacement.size());
-          }
-        }
-    }
-}
-
-fn message_header() -> Tokens {
-    quote! {
-        struct MessageHeader {
-          std::uint16_t payload_words{};
-          std::uint16_t flags{};
-          std::uint16_t module_key{};
-          std::uint16_t message_key{};
-
-          static constexpr std::size_t kSize = 8;
-
-          [[nodiscard]] std::array<std::uint8_t, kSize> Pack() const {
-            std::array<std::uint8_t, kSize> data{};
-            write_u16(payload_words, data.data());
-            write_u16(flags, data.data() + 2);
-            write_u16(module_key, data.data() + 4);
-            write_u16(message_key, data.data() + 6);
-            return data;
+          void align(std::size_t alignment) {
+            if (alignment <= 1) { return; }
+            const auto pad = (alignment - (buffer.size() % alignment)) % alignment;
+            buffer.insert(buffer.end(), pad, 0);
           }
 
-          [[nodiscard]] static MessageHeader Parse(std::span<const std::uint8_t> frame) {
-            if (frame.size() < static_cast<std::size_t>(kSize)) {
-              throw std::runtime_error("frame shorter than header");
+          void write_bool(bool value) {
+            align(1);
+            buffer.push_back(value ? 1u : 0u);
+          }
+
+          void write_char(char value) {
+            align(1);
+            buffer.push_back(static_cast<std::uint8_t>(value));
+          }
+
+          void write_u8(std::uint8_t value) {
+            align(1);
+            buffer.push_back(value);
+          }
+
+          void write_i16(std::int16_t value) {
+            align(2);
+            std::array<std::uint8_t, 2> bytes{};
+            write_u16_raw(static_cast<std::uint16_t>(value), bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_u16(std::uint16_t value) {
+            align(2);
+            std::array<std::uint8_t, 2> bytes{};
+            write_u16_raw(value, bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_i32(std::int32_t value) {
+            align(4);
+            std::array<std::uint8_t, 4> bytes{};
+            write_u32_raw(static_cast<std::uint32_t>(value), bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_u32(std::uint32_t value) {
+            align(4);
+            std::array<std::uint8_t, 4> bytes{};
+            write_u32_raw(value, bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_i64(std::int64_t value) {
+            align(8);
+            std::array<std::uint8_t, 8> bytes{};
+            write_u64_raw(static_cast<std::uint64_t>(value), bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_u64(std::uint64_t value) {
+            align(8);
+            std::array<std::uint8_t, 8> bytes{};
+            write_u64_raw(value, bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_f32(float value) {
+            align(4);
+            std::array<std::uint8_t, 4> bytes{};
+            std::uint32_t bits;
+            std::memcpy(&bits, &value, sizeof(bits));
+            write_u32_raw(bits, bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_f64(double value) {
+            align(8);
+            std::array<std::uint8_t, 8> bytes{};
+            std::uint64_t bits;
+            std::memcpy(&bits, &value, sizeof(bits));
+            write_u64_raw(bits, bytes.data());
+            buffer.insert(buffer.end(), bytes.begin(), bytes.end());
+          }
+
+          void write_string(std::string_view value) {
+            align(4);
+            const auto len = static_cast<std::uint32_t>(value.size() + 1);
+            write_u32(len);
+            buffer.insert(buffer.end(), value.begin(), value.end());
+            buffer.push_back(0);
+          }
+
+          template <typename T, typename WriteFn>
+          void write_sequence(const std::vector<T> &values, WriteFn &&write_fn) {
+            align(4);
+            write_u32(static_cast<std::uint32_t>(values.size()));
+            for (const auto &item : values) {
+              write_fn(*this, item);
             }
-            MessageHeader header{};
-            header.payload_words = read_u16(frame.data());
-            header.flags = read_u16(frame.data() + 2);
-            header.module_key = read_u16(frame.data() + 4);
-            header.message_key = read_u16(frame.data() + 6);
-            return header;
           }
         };
+
+        struct CdrReader {
+          std::span<const std::uint8_t> data;
+          std::size_t offset{0};
+
+          explicit CdrReader(std::span<const std::uint8_t> d) : data(d) {}
+
+          void align(std::size_t alignment) {
+            if (alignment <= 1) { return; }
+            const auto pad = (alignment - (offset % alignment)) % alignment;
+            if (offset + pad > data.size()) { throw std::runtime_error("cursor out of range"); }
+            offset += pad;
+          }
+
+          std::span<const std::uint8_t> take(std::size_t size) {
+            if (offset + size > data.size()) { throw std::runtime_error("cursor out of range"); }
+            auto slice = data.subspan(offset, size);
+            offset += size;
+            return slice;
+          }
+
+          bool read_bool() {
+            align(1);
+            auto bytes = take(1);
+            return bytes[0] != 0;
+          }
+
+          char read_char() {
+            align(1);
+            auto bytes = take(1);
+            return static_cast<char>(bytes[0]);
+          }
+
+          std::uint8_t read_u8() {
+            align(1);
+            auto bytes = take(1);
+            return bytes[0];
+          }
+
+          std::int16_t read_i16() {
+            align(2);
+            auto bytes = take(2);
+            return static_cast<std::int16_t>(read_u16_raw(bytes.data()));
+          }
+
+          std::uint16_t read_u16() {
+            align(2);
+            auto bytes = take(2);
+            return read_u16_raw(bytes.data());
+          }
+
+          std::int32_t read_i32() {
+            align(4);
+            auto bytes = take(4);
+            return static_cast<std::int32_t>(read_u32_raw(bytes.data()));
+          }
+
+          std::uint32_t read_u32() {
+            align(4);
+            auto bytes = take(4);
+            return read_u32_raw(bytes.data());
+          }
+
+          std::int64_t read_i64() {
+            align(8);
+            auto bytes = take(8);
+            return static_cast<std::int64_t>(read_u64_raw(bytes.data()));
+          }
+
+          std::uint64_t read_u64() {
+            align(8);
+            auto bytes = take(8);
+            return read_u64_raw(bytes.data());
+          }
+
+          float read_f32() {
+            align(4);
+            auto bytes = take(4);
+            std::uint32_t bits = read_u32_raw(bytes.data());
+            float value;
+            std::memcpy(&value, &bits, sizeof(value));
+            return value;
+          }
+
+          double read_f64() {
+            align(8);
+            auto bytes = take(8);
+            std::uint64_t bits = read_u64_raw(bytes.data());
+            double value;
+            std::memcpy(&value, &bits, sizeof(value));
+            return value;
+          }
+
+          std::string read_string() {
+            align(4);
+            auto len = read_u32();
+            if (len == 0) { return std::string(); }
+            auto bytes = take(len);
+            if (bytes[len - 1] != 0) { throw std::runtime_error("CDR string missing null terminator"); }
+            return std::string(reinterpret_cast<const char *>(bytes.data()), len - 1);
+          }
+
+          template <typename ReadFn>
+          auto read_sequence(ReadFn &&read_fn) {
+            align(4);
+            auto len = read_u32();
+            using Elem = std::invoke_result_t<ReadFn, CdrReader &>;
+            std::vector<Elem> values;
+            values.reserve(len);
+            for (std::uint32_t i = 0; i < len; ++i) {
+              values.push_back(read_fn(*this));
+            }
+            return values;
+          }
+        };
+
+        inline std::string format_topic(std::string_view template_) {
+          return std::string(template_);
+        }
     }
 }
 
-fn cpp_field_type(primitive: PrimitiveType) -> Tokens {
-    match primitive {
-        PrimitiveType::Bool => quote!(bool),
-        PrimitiveType::Char => quote!(char),
-        PrimitiveType::Octet => quote!(std::uint8_t),
-        PrimitiveType::I16 => quote!(std::int16_t),
-        PrimitiveType::U16 => quote!(std::uint16_t),
-        PrimitiveType::I32 => quote!(std::int32_t),
-        PrimitiveType::U32 => quote!(std::uint32_t),
-        PrimitiveType::I64 => quote!(std::int64_t),
-        PrimitiveType::U64 => quote!(std::uint64_t),
-        PrimitiveType::F32 => quote!(float),
-        PrimitiveType::F64 => quote!(double),
+fn const_literal(value: &ConstValue) -> Tokens {
+    match value {
+        ConstValue::Integer(lit) => quote!( $(lit.value) ),
+        ConstValue::Float(v) => quote!( $(format!("{v}")) ),
+        ConstValue::Fixed(f) => {
+            let mut digits = f.digits.clone();
+            if f.scale > 0 {
+                let point = digits.len().saturating_sub(f.scale as usize);
+                digits.insert(point, '.');
+            }
+            if f.negative {
+                digits.insert(0, '-');
+            }
+            quote!( $(digits) )
+        }
+        ConstValue::Binary(bin) => {
+            let value = bin.to_i64();
+            quote!( $value )
+        }
+        ConstValue::String(s) => quote!( $(quoted_string(s)) ),
+        ConstValue::Boolean(value) => {
+            if *value {
+                quote!(true)
+            } else {
+                quote!(false)
+            }
+        }
+        ConstValue::Char(ch) => quote!( $(format!("'{}'", ch)) ),
+        ConstValue::ScopedName(path) => quote!( $(path.join("::")) ),
+        ConstValue::UnaryOp { .. } | ConstValue::BinaryOp { .. } => quote!(0),
     }
 }
 
-fn cpp_default(primitive: PrimitiveType) -> Tokens {
-    match primitive {
-        PrimitiveType::Bool => quote!(false),
-        PrimitiveType::Char => quote!('\0'),
-        PrimitiveType::Octet
-        | PrimitiveType::I16
-        | PrimitiveType::U16
-        | PrimitiveType::I32
-        | PrimitiveType::U32
-        | PrimitiveType::I64
-        | PrimitiveType::U64 => quote!(0),
-        PrimitiveType::F32 => quote!(0.0F),
-        PrimitiveType::F64 => quote!(0.0),
+fn annotation_value<'a>(annotations: &'a [Annotation], name: &str) -> Option<&'a ConstValue> {
+    annotations
+        .iter()
+        .find(|annotation| {
+            annotation
+                .name
+                .last()
+                .map(|segment| segment.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
+        .and_then(|annotation| {
+            annotation
+                .params
+                .iter()
+                .map(|param| match param {
+                    AnnotationParam::Named { name, value }
+                        if name.eq_ignore_ascii_case("value") =>
+                    {
+                        value
+                    }
+                    AnnotationParam::Positional(value) => value,
+                    AnnotationParam::Named { value, .. } => value,
+                })
+                .next()
+        })
+}
+
+fn annotation_string(annotations: &[Annotation], name: &str) -> Option<String> {
+    annotation_value(annotations, name).and_then(|value| match value {
+        ConstValue::String(value) => Some(value.clone()),
+        _ => None,
+    })
+}
+
+fn annotation_u16(annotations: &[Annotation], name: &str) -> Option<u16> {
+    annotation_value(annotations, name).and_then(|value| match value {
+        ConstValue::Integer(lit) if (0..=u16::MAX as i64).contains(&lit.value) => {
+            Some(lit.value as u16)
+        }
+        _ => None,
+    })
+}
+
+fn scoped_name(scope: &[String], name: &str) -> String {
+    if scope.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}::{}", scope.join("::"), name)
     }
 }
 
-fn cpp_writer(primitive: PrimitiveType) -> Tokens {
-    match primitive {
-        PrimitiveType::Bool => quote!(write_bool),
-        PrimitiveType::Char => quote!(write_char),
-        PrimitiveType::Octet => quote!(write_u8),
-        PrimitiveType::I16 => quote!(write_i16),
-        PrimitiveType::U16 => quote!(write_u16_val),
-        PrimitiveType::I32 => quote!(write_i32),
-        PrimitiveType::U32 => quote!(write_u32_val),
-        PrimitiveType::I64 => quote!(write_i64),
-        PrimitiveType::U64 => quote!(write_u64_val),
-        PrimitiveType::F32 => quote!(write_f32),
-        PrimitiveType::F64 => quote!(write_f64),
-    }
+fn absolute_path(path: &[String]) -> String {
+    format!("::blueberry_generated::{}", path.join("::"))
 }
 
-fn cpp_reader(primitive: PrimitiveType) -> Tokens {
-    match primitive {
-        PrimitiveType::Bool => quote!(read_bool),
-        PrimitiveType::Char => quote!(read_char),
-        PrimitiveType::Octet => quote!(read_u8),
-        PrimitiveType::I16 => quote!(read_i16),
-        PrimitiveType::U16 => quote!(read_u16),
-        PrimitiveType::I32 => quote!(read_i32),
-        PrimitiveType::U32 => quote!(read_u32),
-        PrimitiveType::I64 => quote!(read_i64),
-        PrimitiveType::U64 => quote!(read_u64),
-        PrimitiveType::F32 => quote!(read_f32),
-        PrimitiveType::F64 => quote!(read_f64),
+fn quoted_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    format!("\"{escaped}\"")
+}
+
+#[derive(Default)]
+struct MessageKeyGen {
+    next: u16,
+}
+
+impl MessageKeyGen {
+    fn next(&mut self) -> u16 {
+        self.next = self.next.wrapping_add(1);
+        if self.next == 0 {
+            self.next = 1;
+        }
+        self.next
     }
 }
