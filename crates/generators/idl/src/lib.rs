@@ -87,15 +87,13 @@ impl IdlGenerator {
         self.emit_comments(&enum_def.comments, indent);
         self.emit_annotations(&enum_def.annotations, indent);
         let name = ident(&enum_def.node.name);
-        let assignment_width = enum_def
+        // Calculate the width needed to align all `=` signs vertically
+        let alignment_width = enum_def
             .node
             .enumerators
             .iter()
             .filter(|member| member.value.is_some())
-            .map(|member| {
-                let member_ident = ident(&member.name);
-                tokens_to_line(quote!(#member_ident)).len()
-            })
+            .map(|member| member.name.len())
             .max()
             .unwrap_or(0);
         let header = if let Some(base_type) = &enum_def.node.base_type {
@@ -107,15 +105,21 @@ impl IdlGenerator {
         self.write_tokens_with_suffix(indent, header, " {");
         for member in &enum_def.node.enumerators {
             self.emit_comments(&member.comments, indent + 1);
-            let member_name = ident(&member.name);
+            let member_name = &member.name;
             let suffix = ",";
             if let Some(value) = &member.value {
                 let value_fragment = render_const_value_fragment(value);
-                let line =
-                    format_aligned_enum_assignment(&member_name, assignment_width, &value_fragment);
+                let padding = alignment_width.saturating_sub(member_name.len());
+                let line = format!(
+                    "{}{} = {}",
+                    member_name,
+                    " ".repeat(padding),
+                    value_fragment
+                );
                 self.write_raw_line_with_suffix(indent + 1, &line, suffix);
             } else {
-                let tokens = quote!(#member_name);
+                let member_ident = ident(member_name);
+                let tokens = quote!(#member_ident);
                 self.write_tokens_with_suffix(indent + 1, tokens, suffix);
             }
         }
@@ -427,17 +431,6 @@ fn format_assignment(lhs: TokenStream, value: &LiteralFragment) -> String {
     }
     lhs_text.push_str(&value.to_string());
     lhs_text
-}
-
-fn format_aligned_enum_assignment(name: &Ident, width: usize, value: &LiteralFragment) -> String {
-    let name_text = tokens_to_line(quote!(#name));
-    let padding = width.saturating_sub(name_text.len()) + 1;
-    let mut line = String::new();
-    line.push_str(&name_text);
-    line.push_str(&" ".repeat(padding));
-    line.push_str("= ");
-    line.push_str(&value.to_string());
-    line
 }
 
 fn format_fixed_point_literal(literal: &FixedPointLiteral) -> String {
@@ -764,12 +757,12 @@ mod tests {
     }
 
     #[test]
-    fn aligns_enum_assignments() {
+    fn enums_align_assignments() {
         let defs = load_fixture("enum_only.idl");
         let emitted = generate_idl(&defs);
         assert!(
-            emitted.contains("    ACTIVE   = 0,\n    INACTIVE = 1,\n    PENDING  = 2"),
-            "expected enum assignments to align:\n{}",
+            emitted.contains("    ACTIVE   = 0,\n    INACTIVE = 1,\n    PENDING  = 2,"),
+            "expected enum assignments with aligned = signs:\n{}",
             emitted
         );
     }
