@@ -45,10 +45,7 @@ impl IdlGenerator {
     }
 
     fn emit_definitions(&mut self, definitions: &[Definition], indent: usize) {
-        for (idx, definition) in definitions.iter().enumerate() {
-            if idx > 0 {
-                self.buffer.push('\n');
-            }
+        for definition in definitions {
             self.emit_definition(definition, indent);
         }
     }
