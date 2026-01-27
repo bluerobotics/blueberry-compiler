@@ -1,0 +1,39 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Fixture covering numeric constant folding scenarios.
+const long GLOBAL_BASE = 12;
+const long GLOBAL_ALIAS = 12;
+const double PI_VALUE = 3.141592653589793;
+const double TAU_ALIAS = 3.141592653589793;
+const long FIXED_BASE = 12.5d;
+const long FIXED_ALIAS = 12.5d;
+const string PRODUCT = "Blueberry";
+const string PRODUCT_ALIAS = PRODUCT;
+const long FORWARD_ALIAS = 64;
+const long FORWARD_BASE = 64;
+@Meta(limit = 12)
+const long ANNOTATED_LIMIT = 12;
+module Outer {
+    const long MODULE_BASE = 21;
+    const long MODULE_COMPLEX = 18;
+    const double MODULE_RATIO = 2.75;
+    const long MODULE_MAGIC = 39;
+    const long MODULE_ALIAS = 21;
+    module Inner {
+        const long INNER_BASE = 7;
+        const long FROM_PARENT = 21;
+        const long FROM_OUTER_SCOPED = 21;
+        const long FROM_ABSOLUTE = 21;
+    };
+};
+enum WithConst {
+    START = 12,
+    NEXT  = 13,
+};
+@Range(max = 12)
+struct AnnotatedStruct {
+    @Field(defaultValue = 12)
+    long threshold;
+};

@@ -1,0 +1,12 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Floating-point literal coverage for grammar variations.
+const double FRACTION_ONLY = 0.625;
+const double INTEGER_WITH_TRAILING_DOT = 42.0;
+const double EXP_ONLY = 7000.0;
+const double FRACTION_WITH_EXP = 5.0;
+const double DECIMAL_WITH_NEG_EXP = 1.2;
+const double UPPER_EXP = 25.0;
+const double NEGATIVE_FRACTION = -0.125;

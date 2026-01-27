@@ -1,0 +1,10 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+@topic(value = "blueberry/devices/status")
+@message_key(value = 0x47)
+message StatusUpdate {
+    long id;
+    boolean active;
+};

@@ -1,0 +1,8 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Module-only fixture that mirrors the Example module layout.
+module Navigation {
+    typedef long Heading;
+};
