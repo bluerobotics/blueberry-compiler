@@ -621,7 +621,7 @@ impl RustGenerator {
                 quote!($literal)
             }
             ConstValue::Binary(binary) => {
-                let literal = binary.to_i64();
+                let literal = binary.to_i128();
                 quote!($literal)
             }
             ConstValue::String(text) => {

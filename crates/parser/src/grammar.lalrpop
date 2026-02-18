@@ -285,6 +285,7 @@ Type: Type = {
     // all 'long' variants go through LongSuffix
     "long" <k:LongSuffix> => k,
     "short" => Type::Short,
+    "unsigned" <k:UnsignedSuffix> => k,
     "uint8" => Type::Octet,
     "uint16" => Type::UnsignedShort,
     "uint32" => Type::UnsignedLong,
@@ -320,6 +321,16 @@ LongSuffix: Type = {
     "double" => Type::LongDouble,
     // bare "long"
     => Type::Long,
+};
+
+UnsignedSuffix: Type = {
+    "short" => Type::UnsignedShort,
+    "long" <k:UnsignedLongSuffix> => k,
+};
+
+UnsignedLongSuffix: Type = {
+    "long" => Type::UnsignedLongLong,
+    => Type::UnsignedLong,
 };
 
 ConstValue: ConstValue = {

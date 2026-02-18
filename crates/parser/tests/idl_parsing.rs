@@ -61,7 +61,7 @@ fn expect_scoped_const_value<'a>(defs: &'a [Definition], path: &[&str]) -> &'a C
     &expect_scoped_const_def(defs, path).node.value
 }
 
-fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
+fn expect_integer(value: &ConstValue, expected: i128) -> &IntegerLiteral {
     match value {
         ConstValue::Integer(literal) => {
             assert_eq!(
@@ -77,17 +77,17 @@ fn expect_integer(value: &ConstValue, expected: i64) -> &IntegerLiteral {
 
 fn expect_binary<'a>(
     value: &'a ConstValue,
-    expected: i64,
+    expected: i128,
     expected_digits: &str,
 ) -> &'a BinaryLiteral {
     match value {
         ConstValue::Binary(literal) => {
             assert_eq!(
-                literal.to_i64(),
+                literal.to_i128(),
                 expected,
                 "expected binary value {}, found {}",
                 expected,
-                literal.to_i64()
+                literal.to_i128()
             );
             assert_eq!(
                 literal.digits, expected_digits,
