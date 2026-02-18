@@ -239,7 +239,7 @@ impl NumericConstantFolder {
             ConstValue::Integer(literal) => Some(literal.value.to_string()),
             ConstValue::Float(f) => Some(format_float_value(*f)),
             ConstValue::Fixed(fixed) => Some(format_float_value(fixed.to_f64())),
-            ConstValue::Binary(literal) => Some(literal.to_i64().to_string()),
+            ConstValue::Binary(literal) => Some(literal.to_i128().to_string()),
             ConstValue::ScopedName(names) => {
                 let resolved = self.resolve_scoped_value(names, scope, current_path)?;
                 self.build_numeric_expression(&resolved, scope, current_path)
@@ -271,7 +271,7 @@ impl NumericConstantFolder {
         let value = eval(expression).ok()?;
         match value {
             Value::Int(v) => Some(ConstValue::Integer(IntegerLiteral::new(
-                v,
+                v.into(),
                 IntegerBase::Decimal,
             ))),
             Value::Float(v) => Some(ConstValue::Float(v)),
@@ -441,7 +441,7 @@ fn assign_enum_members(members: &mut [EnumMember]) {
             }
             Some(ConstValue::Binary(binary_literal)) => {
                 let mut new_value =
-                    IntegerLiteral::new(binary_literal.to_i64(), IntegerBase::Decimal);
+                    IntegerLiteral::new(binary_literal.to_i128(), IntegerBase::Decimal);
                 new_value.value = new_value.value.checked_add(1).unwrap();
                 next_value = Some(new_value);
             }

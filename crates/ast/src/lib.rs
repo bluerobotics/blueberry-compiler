@@ -213,23 +213,23 @@ impl FixedPointLiteral {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntegerLiteral {
-    pub value: i64,
+    pub value: i128,
     pub base: IntegerBase,
 }
 
 impl IntegerLiteral {
-    pub fn new(value: i64, base: IntegerBase) -> Self {
+    pub fn new(value: i128, base: IntegerBase) -> Self {
         IntegerLiteral { value, base }
     }
 
     pub fn from_decimal_str(raw: &str) -> Self {
-        let value = raw.parse::<i64>().unwrap();
+        let value = raw.parse::<i128>().unwrap();
         IntegerLiteral::new(value, IntegerBase::Decimal)
     }
 
     pub fn from_octal_str(raw: &str) -> Self {
         let (is_negative, digits) = split_sign(raw);
-        let magnitude = i64::from_str_radix(digits, 8).unwrap();
+        let magnitude = i128::from_str_radix(digits, 8).unwrap();
         let value = if is_negative { -magnitude } else { magnitude };
         IntegerLiteral::new(value, IntegerBase::Octal)
     }
@@ -240,7 +240,7 @@ impl IntegerLiteral {
             .strip_prefix("0x")
             .or_else(|| digits.strip_prefix("0X"))
             .expect("hex literal must start with 0x or 0X");
-        let magnitude = i64::from_str_radix(digits, 16).unwrap();
+        let magnitude = i128::from_str_radix(digits, 16).unwrap();
         let value = if is_negative { -magnitude } else { magnitude };
         IntegerLiteral::new(value, IntegerBase::Hexadecimal)
     }
@@ -271,8 +271,8 @@ impl BinaryLiteral {
         BinaryLiteral { digits, negative }
     }
 
-    pub fn to_i64(&self) -> i64 {
-        let magnitude = i64::from_str_radix(&self.digits, 2).unwrap();
+    pub fn to_i128(&self) -> i128 {
+        let magnitude = i128::from_str_radix(&self.digits, 2).unwrap();
         if self.negative { -magnitude } else { magnitude }
     }
 

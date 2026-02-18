@@ -515,9 +515,8 @@ fn format_binary_literal(literal: &BinaryLiteral) -> String {
     literal.to_source()
 }
 
-fn format_with_base_prefix(value: i64, radix: u32, prefix: &str) -> String {
-    let signed = value as i128;
-    let magnitude = (if value < 0 { -signed } else { signed }) as u128;
+fn format_with_base_prefix(value: i128, radix: u32, prefix: &str) -> String {
+    let magnitude = (if value < 0 { -value } else { value }) as u128;
     let digits = match radix {
         8 => format!("{:o}", magnitude),
         16 => format!("{:X}", magnitude),

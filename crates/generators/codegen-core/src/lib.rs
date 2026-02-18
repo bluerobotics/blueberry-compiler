@@ -251,7 +251,7 @@ fn annotation_string(annotations: &[Annotation], name: &str) -> Option<String> {
 
 fn annotation_u16(annotations: &[Annotation], name: &str) -> Option<u16> {
     annotation_value(annotations, name).and_then(|value| match value {
-        ConstValue::Integer(lit) if (0..=u16::MAX as i64).contains(&lit.value) => {
+        ConstValue::Integer(lit) if (0..=u16::MAX as i128).contains(&lit.value) => {
             Some(lit.value as u16)
         }
         _ => None,
