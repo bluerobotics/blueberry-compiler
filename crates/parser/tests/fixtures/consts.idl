@@ -10,3 +10,11 @@ const boolean FEATURE_FLAG = TRUE;
 const char NEWLINE = '\n';
 const string PRODUCT = "Blueberry";
 const Status DEFAULT_STATUS = Status::ACTIVE;
+const long long BIG_NUMBER = 9223372036854775807;
+const unsigned long ID = 123456789;
+const unsigned long long LARGE_ID = 12345678901234567890;
+const short MIN_TEMP = -273;
+const unsigned short PORT = 65535;
+const octet RAW_BYTE = 0xFF;
+const string<8> SHORT_NAME = "BlueBr";
+
