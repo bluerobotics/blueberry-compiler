@@ -1,10 +1,11 @@
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use blueberry_codegen_core::{CodegenError, GeneratedFile};
 use blueberry_generator_c as generator_c;
 use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
-use blueberry_parser::parse_idl;
+use blueberry_parser::{Commented, Definition, ModuleDef, ParseError, parse_idl};
 use clap::Parser;
 use std::{
     error::Error,
@@ -17,18 +18,24 @@ fn main() {
     let options = CliOptions::parse();
 
     if let Err(err) = run(&options) {
-        eprintln!("error: {err}");
+        if err.downcast_ref::<DiagnosticAlreadyPrinted>().is_none() {
+            eprintln!("error: {err}");
+        }
         process::exit(1);
     }
 }
 
 fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
-    let contents = fs::read_to_string(&options.input)?;
-    let definitions = match parse_idl(&contents) {
-        Ok(defs) => defs,
-        Err(message) => {
-            return Err(Box::new(ParseFailure::new(&options.input, message)));
-        }
+    let is_dir = options.input.is_dir();
+
+    if is_dir && (options.emit_rust || options.emit_c || options.emit_cpp || options.emit_python) {
+        return Err("folder input is currently only supported with --emit-idl".into());
+    }
+
+    let definitions = if is_dir {
+        load_definitions_from_dir(&options.input)?
+    } else {
+        parse_file(&options.input)?
     };
 
     println!(
@@ -80,7 +87,9 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
     about = "Parse Blueberry IDL files and optionally emit normalized IDL or Rust source."
 )]
 struct CliOptions {
-    /// Path to the IDL source file to parse.
+    /// Path to an IDL source file or a directory of IDL files.
+    /// When a directory is given, the folder structure and file names are used
+    /// as module scoping in the combined output (only --emit-idl supported).
     #[arg(value_name = "IDL_PATH")]
     input: PathBuf,
 
@@ -109,33 +118,208 @@ struct CliOptions {
     output_dir: Option<PathBuf>,
 }
 
-#[derive(Debug)]
-struct ParseFailure {
-    path: PathBuf,
-    message: String,
+fn parse_file(path: &Path) -> Result<Vec<Definition>, Box<dyn Error>> {
+    let contents = fs::read_to_string(path)?;
+    parse_idl(&contents).map_err(|err| {
+        report_parse_error(path, &contents, &err);
+        Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
+    })
 }
 
-impl ParseFailure {
-    fn new(path: &Path, message: String) -> Self {
-        Self {
-            path: path.to_path_buf(),
-            message,
+fn report_parse_error(path: &Path, source: &str, error: &ParseError) {
+    let filename = path.display().to_string();
+    let f = filename.as_str();
+
+    match error {
+        ParseError::UnrecognizedToken {
+            span,
+            token,
+            expected: _,
+        } => {
+            let label_msg = error
+                .format_expected()
+                .unwrap_or_else(|| "unexpected token".into());
+
+            Report::build(ReportKind::Error, f, span.0)
+                .with_message(format!("unexpected token `{token}`"))
+                .with_label(
+                    Label::new((f, span.0..span.1))
+                        .with_message(label_msg)
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((f, Source::from(source)))
+                .unwrap();
+        }
+        ParseError::UnrecognizedEof {
+            location,
+            expected: _,
+        } => {
+            let loc = (*location).min(source.len());
+            let label_msg = error
+                .format_expected()
+                .unwrap_or_else(|| "unexpected end of input".into());
+
+            Report::build(ReportKind::Error, f, loc)
+                .with_message("unexpected end of input")
+                .with_label(
+                    Label::new((f, loc..loc))
+                        .with_message(label_msg)
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((f, Source::from(source)))
+                .unwrap();
+        }
+        ParseError::InvalidToken { location } => {
+            let end = (*location + 1).min(source.len());
+
+            Report::build(ReportKind::Error, f, *location)
+                .with_message("invalid token")
+                .with_label(
+                    Label::new((f, *location..end))
+                        .with_message("unexpected character")
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((f, Source::from(source)))
+                .unwrap();
+        }
+        ParseError::ExtraToken { span, token } => {
+            Report::build(ReportKind::Error, f, span.0)
+                .with_message(format!("unexpected extra token `{token}`"))
+                .with_label(
+                    Label::new((f, span.0..span.1))
+                        .with_message("not expected here")
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((f, Source::from(source)))
+                .unwrap();
+        }
+        ParseError::Validation { message } => {
+            Report::<(&str, std::ops::Range<usize>)>::build(ReportKind::Error, f, 0)
+                .with_message(message)
+                .finish()
+                .eprint((f, Source::from(source)))
+                .unwrap();
         }
     }
 }
 
-impl fmt::Display for ParseFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "failed to parse {}: {}",
-            self.path.display(),
-            self.message
-        )
+/// Sentinel error: the diagnostic was already printed via ariadne, so
+/// `main()` should exit without printing anything else.
+#[derive(Debug)]
+struct DiagnosticAlreadyPrinted;
+
+impl fmt::Display for DiagnosticAlreadyPrinted {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
-impl Error for ParseFailure {}
+impl Error for DiagnosticAlreadyPrinted {}
+
+fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Error>> {
+    let idl_files = collect_idl_files(root)?;
+    if idl_files.is_empty() {
+        return Err(format!("no .idl files found in {}", root.display()).into());
+    }
+
+    let mut all_defs: Vec<Definition> = Vec::new();
+    for path in &idl_files {
+        let defs = parse_file(path)?;
+
+        let rel = path
+            .strip_prefix(root)
+            .expect("collected path should be under root");
+        let segments: Vec<String> = rel
+            .parent()
+            .into_iter()
+            .flat_map(|p| p.components())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .chain(std::iter::once(
+                rel.file_stem()
+                    .expect("idl file should have a stem")
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+            .collect();
+
+        let wrapped = wrap_in_modules(&segments, defs);
+        merge_definitions(&mut all_defs, wrapped);
+    }
+
+    Ok(all_defs)
+}
+
+fn collect_idl_files(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut files = Vec::new();
+    collect_idl_files_recursive(dir, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_idl_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_idl_files_recursive(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "idl") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Wraps definitions in nested modules matching the given path segments.
+/// For segments `["a", "b"]` and defs `[D1, D2]`, produces
+/// `[ModuleDef("a", [ModuleDef("b", [D1, D2])])]`.
+fn wrap_in_modules(segments: &[String], defs: Vec<Definition>) -> Vec<Definition> {
+    if segments.is_empty() {
+        return defs;
+    }
+
+    let innermost = Definition::ModuleDef(Commented::new(
+        ModuleDef {
+            name: segments.last().unwrap().clone(),
+            definitions: defs,
+        },
+        Vec::new(),
+    ));
+
+    let mut current = vec![innermost];
+    for name in segments[..segments.len() - 1].iter().rev() {
+        current = vec![Definition::ModuleDef(Commented::new(
+            ModuleDef {
+                name: name.clone(),
+                definitions: current,
+            },
+            Vec::new(),
+        ))];
+    }
+
+    current
+}
+
+/// Merges `incoming` definitions into `target`, combining `ModuleDef` nodes
+/// that share the same name at the same level instead of duplicating them.
+fn merge_definitions(target: &mut Vec<Definition>, incoming: Vec<Definition>) {
+    for def in incoming {
+        if let Definition::ModuleDef(ref incoming_mod) = def {
+            let existing = target.iter_mut().find(
+                |d| matches!(d, Definition::ModuleDef(m) if m.node.name == incoming_mod.node.name),
+            );
+            if let Some(Definition::ModuleDef(existing_mod)) = existing {
+                let inner = incoming_mod.node.definitions.clone();
+                merge_definitions(&mut existing_mod.node.definitions, inner);
+                continue;
+            }
+        }
+        target.push(def);
+    }
+}
 
 fn fmt_codegen_error(language: &str, err: CodegenError) -> Box<dyn Error> {
     let message = match err {
