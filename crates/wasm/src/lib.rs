@@ -21,7 +21,7 @@ pub fn wasm_start() {
 pub fn parse_idl_wasm(input: &str) -> String {
     match parse_idl(input) {
         Ok(defs) => format!("{:#?}", defs),
-        Err(err) => err,
+        Err(err) => err.to_string(),
     }
 }
 
@@ -44,20 +44,21 @@ pub fn analyze_idl_wasm(input: &str, mode: &str) -> JsValue {
             Reflect::set(&result, &"codegen".into(), &codegen).unwrap();
         }
         Err(err) => {
-            let err_str = JsValue::from_str(&err);
+            let err_msg = err.to_string();
+            let err_str = JsValue::from_str(&err_msg);
             Reflect::set(&result, &"ast".into(), &err_str).unwrap();
             let target = match mode {
                 "rust" => "Rust",
                 _ => "IDL",
             };
-            let generated_msg = format!("Cannot generate {target}:\n{err}");
+            let generated_msg = format!("Cannot generate {target}:\n{err_msg}");
             Reflect::set(
                 &result,
                 &"generated".into(),
                 &JsValue::from_str(&generated_msg),
             )
             .unwrap();
-            Reflect::set(&result, &"error".into(), &JsValue::from_str(&err)).unwrap();
+            Reflect::set(&result, &"error".into(), &JsValue::from_str(&err_msg)).unwrap();
             Reflect::set(&result, &"codegen".into(), &JsValue::UNDEFINED).unwrap();
         }
     }
