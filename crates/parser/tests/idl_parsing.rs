@@ -1,6 +1,6 @@
 use blueberry_parser::{
     AnnotationParam, BinaryLiteral, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral,
-    ImportScope, IntegerBase, IntegerLiteral, Type, TypeDef, parse_idl,
+    ImportScope, IntegerBase, IntegerLiteral, ParseError, Type, TypeDef, parse_idl,
 };
 use std::{fs, path::Path};
 
@@ -834,8 +834,11 @@ struct Derived : BaseA, BaseB {
 "#;
     let err = parse_idl(src).expect_err("struct inheritance should reject multiple bases");
     assert!(
-        err.contains("Parse error"),
-        "unexpected error message: {err}"
+        matches!(
+            err,
+            ParseError::UnrecognizedToken { .. } | ParseError::ExtraToken { .. }
+        ),
+        "unexpected error variant: {err}"
     );
 }
 
@@ -861,7 +864,10 @@ message Incomplete {
 };
 "#;
     let err = parse_idl(src).expect_err("message without annotations should fail");
-    assert!(err.contains("@topic"), "unexpected error message: {err}");
+    assert!(
+        err.to_string().contains("@topic"),
+        "unexpected error message: {err}"
+    );
 }
 
 #[test]
@@ -873,7 +879,10 @@ message Overflowing {
 };
 "#;
     let err = parse_idl(src).expect_err("message without @topic should fail");
-    assert!(err.contains("@topic"), "unexpected error message: {err}");
+    assert!(
+        err.to_string().contains("@topic"),
+        "unexpected error message: {err}"
+    );
 }
 
 #[test]
