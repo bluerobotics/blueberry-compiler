@@ -348,7 +348,7 @@ fn parses_typedefs_sequences_and_scoped_names() {
 #[test]
 fn parses_constant_values() {
     let defs = parse_fixture("consts.idl");
-    assert_eq!(defs.len(), 7);
+    assert_eq!(defs.len(), 14);
 
     let mut consts = defs.iter().filter_map(|def| {
         if let Definition::ConstDef(c) = def {
