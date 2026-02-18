@@ -4,22 +4,24 @@ use evalexpr::{Value, eval};
 use lalrpop_util::lalrpop_mod;
 
 pub mod ast;
+pub mod error;
 
 lalrpop_mod!(grammar);
 
 pub use ast::*;
+pub use error::ParseError;
 pub use grammar::*;
 
 const TOPIC_ANNOTATION_NAME: &str = "topic";
 
 type MessageValidationFn =
-    fn(scope: &[String], message_def: &Commented<MessageDef>) -> Result<(), String>;
+    fn(scope: &[String], message_def: &Commented<MessageDef>) -> Result<(), ParseError>;
 
 /// Parse an IDL file string into a vector of definitions
-pub fn parse_idl(input: &str) -> Result<Vec<Definition>, String> {
+pub fn parse_idl(input: &str) -> Result<Vec<Definition>, ParseError> {
     let mut defs = grammar::IdlFileParser::new()
         .parse(input)
-        .map_err(|e| format!("Parse error: {:?}", e))?;
+        .map_err(ParseError::from_lalrpop)?;
 
     // Pos processing AST (Abstract Syntax Tree)
     fold_numeric_constants(&mut defs);
@@ -52,7 +54,7 @@ fn propagate_enum_values(defs: &mut [Definition]) {
     }
 }
 
-fn validate_message_annotations(defs: &[Definition]) -> Result<(), String> {
+fn validate_message_annotations(defs: &[Definition]) -> Result<(), ParseError> {
     let validators: &[MessageValidationFn] = &[ensure_topic_annotation];
     let mut scope = Vec::new();
     validate_messages_in_scope(defs, &mut scope, validators)
@@ -62,7 +64,7 @@ fn validate_messages_in_scope(
     defs: &[Definition],
     scope: &mut Vec<String>,
     validators: &[MessageValidationFn],
-) -> Result<(), String> {
+) -> Result<(), ParseError> {
     for def in defs {
         match def {
             Definition::ModuleDef(module_def) => {
@@ -84,15 +86,15 @@ fn validate_messages_in_scope(
 fn ensure_topic_annotation(
     scope: &[String],
     message_def: &Commented<MessageDef>,
-) -> Result<(), String> {
+) -> Result<(), ParseError> {
     if has_annotation(&message_def.annotations, TOPIC_ANNOTATION_NAME) {
         return Ok(());
     }
 
     let full_name = scoped_message_name(scope, &message_def.node.name);
-    Err(format!(
-        "message {full_name} must declare a @topic annotation"
-    ))
+    Err(ParseError::Validation {
+        message: format!("message {full_name} must declare a @topic annotation"),
+    })
 }
 
 fn has_annotation(annotations: &[Annotation], expected_name: &str) -> bool {
