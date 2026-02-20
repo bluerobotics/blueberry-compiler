@@ -6,7 +6,10 @@ use lalrpop_util::lalrpop_mod;
 pub mod ast;
 pub mod error;
 
-lalrpop_mod!(grammar);
+lalrpop_mod!(
+    #[allow(clippy::type_complexity)]
+    grammar
+);
 
 pub use ast::*;
 pub use error::ParseError;
