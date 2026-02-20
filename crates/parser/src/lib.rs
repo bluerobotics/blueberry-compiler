@@ -19,8 +19,19 @@ type MessageValidationFn =
 
 /// Parse an IDL file string into a vector of definitions
 pub fn parse_idl(input: &str) -> Result<Vec<Definition>, ParseError> {
+    // Both arguments are the same string. The first is `source`, a custom
+    // grammar parameter that lets MemberList actions scan for newlines to
+    // tell trailing from preceding comments. For example:
+    //
+    //     uint32 x; /* trailing */
+    //     // preceding
+    //     uint16 y;
+    //
+    // "trailing" is on the same line as x's ";", so it attaches to x.
+    // "preceding" is on the next line, so it attaches to y.
+    // Without the raw source text we can't find where lines break.
     let mut defs = grammar::IdlFileParser::new()
-        .parse(input)
+        .parse(input, input)
         .map_err(ParseError::from_lalrpop)?;
 
     // Pos processing AST (Abstract Syntax Tree)
