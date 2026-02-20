@@ -1,0 +1,61 @@
+// Single-line comment on a struct
+struct SingleLineCommented {
+    long id;
+};
+
+/* Block comment on a struct */
+struct BlockCommented {
+    long id;
+};
+
+// Multi-line
+// single-line comments
+struct MultiSingleLine {
+    long id;
+};
+
+/*
+  Multi-line
+  block comment
+*/
+struct MultiBlockLine {
+    long id;
+};
+
+// Struct with commented members
+struct CommentedMembers {
+    // The identifier
+    long id;
+
+    /* The label */
+    string label;
+
+    // First line
+    // Second line
+    long multi;
+};
+
+struct InlineComments {
+    long first; // inline comment on first
+    string second;
+    boolean third; /* inline block comment */
+    long fourth;
+    /* preceding comment first */
+    uint32 fifth; /* trailing block comment */
+    // preceding comment second
+    uint16 sixth; // trailing single-line comment
+};
+
+module Outer {
+    module Inner {
+        const long NOT_COMMENTED = 7;
+//        const long COMMENTED_1 = MODULE_BASE;
+ //       const long COMMENTED_2 = Outer::MODULE_BASE;
+ //       const long COMMENTED_3 = ::Outer::MODULE_BASE;
+    };
+};
+
+
+struct Uncommented {
+    long id;
+};
