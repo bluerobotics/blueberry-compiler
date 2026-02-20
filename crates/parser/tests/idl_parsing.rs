@@ -1,6 +1,6 @@
 use blueberry_parser::{
     AnnotationParam, BinaryLiteral, Commented, ConstDef, ConstValue, Definition, FixedPointLiteral,
-    ImportScope, IntegerBase, IntegerLiteral, ParseError, Type, TypeDef, parse_idl,
+    ImportScope, IntegerBase, IntegerLiteral, ParseError, StructDef, Type, TypeDef, parse_idl,
 };
 use std::{fs, path::Path};
 
@@ -991,4 +991,119 @@ fn parses_scoped_module_names() {
         }
         other => panic!("expected enum, found {:?}", other),
     }
+}
+
+#[test]
+fn parses_comments_on_definitions() {
+    let defs = parse_fixture("comments.idl");
+    assert_eq!(defs.len(), 8);
+
+    fn expect_struct(def: &Definition) -> &Commented<StructDef> {
+        match def {
+            Definition::StructDef(s) => s,
+            other => panic!("expected struct definition, found {:?}", other),
+        }
+    }
+
+    let single = expect_struct(&defs[0]);
+    assert_eq!(single.node.name, "SingleLineCommented");
+    assert_eq!(single.comments, vec!["Single-line comment on a struct"]);
+
+    let block = expect_struct(&defs[1]);
+    assert_eq!(block.node.name, "BlockCommented");
+    assert_eq!(block.comments, vec!["Block comment on a struct"]);
+
+    let multi_single = expect_struct(&defs[2]);
+    assert_eq!(multi_single.node.name, "MultiSingleLine");
+    assert_eq!(
+        multi_single.comments,
+        vec!["Multi-line", "single-line comments"]
+    );
+
+    let multi_block = expect_struct(&defs[3]);
+    assert_eq!(multi_block.node.name, "MultiBlockLine");
+    assert_eq!(multi_block.comments, vec!["Multi-line\nblock comment"]);
+
+    let members_struct = expect_struct(&defs[4]);
+    assert_eq!(members_struct.node.name, "CommentedMembers");
+    assert_eq!(
+        members_struct.comments,
+        vec!["Struct with commented members"]
+    );
+
+    let members = &members_struct.node.members;
+    assert_eq!(members.len(), 3);
+
+    assert_eq!(members[0].comments, vec!["The identifier"]);
+    assert_eq!(members[0].node.name, "id");
+
+    assert_eq!(members[1].comments, vec!["The label"]);
+    assert_eq!(members[1].node.name, "label");
+
+    assert_eq!(members[2].comments, vec!["First line", "Second line"]);
+    assert_eq!(members[2].node.name, "multi");
+
+    // Inline (trailing) comments attach to the element on the same line
+    let inline_struct = expect_struct(&defs[5]);
+    assert_eq!(inline_struct.node.name, "InlineComments");
+    let inline_members = &inline_struct.node.members;
+    assert_eq!(inline_members.len(), 6);
+
+    assert_eq!(
+        inline_members[0].comments,
+        vec!["inline comment on first"],
+        "trailing comment attaches to 'first'"
+    );
+    assert_eq!(inline_members[0].node.name, "first");
+
+    assert!(
+        inline_members[1].comments.is_empty(),
+        "second member has no comment"
+    );
+    assert_eq!(inline_members[1].node.name, "second");
+
+    assert_eq!(
+        inline_members[2].comments,
+        vec!["inline block comment"],
+        "trailing block comment attaches to 'third'"
+    );
+    assert_eq!(inline_members[2].node.name, "third");
+
+    assert!(
+        inline_members[3].comments.is_empty(),
+        "fourth member has no comment"
+    );
+    assert_eq!(inline_members[3].node.name, "fourth");
+
+    assert_eq!(
+        inline_members[4].comments,
+        vec!["preceding comment first", "trailing block comment"],
+        "preceding and trailing comments both attach to 'fifth'"
+    );
+    assert_eq!(inline_members[4].node.name, "fifth");
+
+    assert_eq!(
+        inline_members[5].comments,
+        vec!["preceding comment second", "trailing single-line comment"],
+        "preceding and trailing comments both attach to 'sixth'"
+    );
+    assert_eq!(inline_members[5].node.name, "sixth");
+}
+
+#[test]
+fn uncommented_definitions_have_empty_comments() {
+    let defs = parse_fixture("comments.idl");
+
+    let uncommented = defs
+        .iter()
+        .find_map(|def| match def {
+            Definition::StructDef(s) if s.node.name == "Uncommented" => Some(s),
+            _ => None,
+        })
+        .expect("Uncommented struct missing");
+
+    assert!(
+        uncommented.comments.is_empty(),
+        "uncommented struct should have no comments"
+    );
 }
