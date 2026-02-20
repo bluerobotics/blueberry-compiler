@@ -1,31 +1,31 @@
 use crate::ast::*;
 
-grammar;
+grammar(source: &'input str);
 
 pub IdlFile: Vec<Definition> = {
-    <defs:Definition*> => defs
+    <defs:DefinitionList> => defs
 };
 
-// Comment parsing rules
-Comment: String = {
-    r"//[^\n]*" => {
-        let text = <>.trim_start_matches("//").trim_start();
-        text.to_string()
+// Comment parsing rules — each comment carries its byte offset for
+// trailing-comment reassignment in MemberList.
+Comment: (usize, String) = {
+    <pos:@L> <text:r"//[^\n]*"> => {
+        (pos, text.trim_start_matches("//").trim_start().to_string())
     },
-    r"/\*([^*]|\*+[^*/])*\*+/" => {
-        let raw = <>;
-        let without_start = raw.trim_start_matches("/*");
+    <pos:@L> <text:r"/\*([^*]|\*+[^*/])*\*+/"> => {
+        let without_start = text.trim_start_matches("/*");
         let without_end = without_start.trim_end_matches("*/");
-        without_end
+        let processed = without_end
             .trim()
             .lines()
             .map(|line| line.trim_start())
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        (pos, processed)
     },
 };
 
-CommentList: Vec<String> = {
+CommentList: Vec<(usize, String)> = {
     => vec![],
     <c:Comment> <rest:CommentList> => {
         let mut list = vec![c];
@@ -90,32 +90,37 @@ AnnotationList: Vec<Annotation> = {
     }
 };
 
-Definition: Definition = {
-    <comments:CommentList> <annotations:AnnotationList> <m:ModuleDef> => {
-        Definition::ModuleDef(Commented::with_annotations(m, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <t:TypeDef> => {
-        Definition::TypeDef(Commented::with_annotations(t, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <e:EnumDef> => {
-        Definition::EnumDef(Commented::with_annotations(e, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <s:StructDef> => {
-        Definition::StructDef(Commented::with_annotations(s, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <m:MessageDef> => {
-        Definition::MessageDef(Commented::with_annotations(m, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <c:ConstDef> => {
-        Definition::ConstDef(Commented::with_annotations(c, comments, annotations))
-    },
-    <comments:CommentList> <annotations:AnnotationList> <i:ImportDef> => {
-        Definition::ImportDef(Commented::with_annotations(i, comments, annotations))
+DefinitionList: Vec<Definition> = {
+    <_trailing:CommentList> => vec![],
+    <comments:CommentList> <annotations:AnnotationList> <d:DefinitionInner> <rest:DefinitionList> => {
+        let comments: Vec<String> = comments.into_iter().map(|(_, s)| s).collect();
+        let def = match d {
+            Definition::ModuleDef(m) => Definition::ModuleDef(Commented::with_annotations(m.node, comments, annotations)),
+            Definition::TypeDef(t) => Definition::TypeDef(Commented::with_annotations(t.node, comments, annotations)),
+            Definition::EnumDef(e) => Definition::EnumDef(Commented::with_annotations(e.node, comments, annotations)),
+            Definition::StructDef(s) => Definition::StructDef(Commented::with_annotations(s.node, comments, annotations)),
+            Definition::MessageDef(m) => Definition::MessageDef(Commented::with_annotations(m.node, comments, annotations)),
+            Definition::ConstDef(c) => Definition::ConstDef(Commented::with_annotations(c.node, comments, annotations)),
+            Definition::ImportDef(i) => Definition::ImportDef(Commented::with_annotations(i.node, comments, annotations)),
+        };
+        let mut list = vec![def];
+        list.extend(rest);
+        list
     },
 };
 
+DefinitionInner: Definition = {
+    <m:ModuleDef> => Definition::ModuleDef(Commented::new(m, vec![])),
+    <t:TypeDef> => Definition::TypeDef(Commented::new(t, vec![])),
+    <e:EnumDef> => Definition::EnumDef(Commented::new(e, vec![])),
+    <s:StructDef> => Definition::StructDef(Commented::new(s, vec![])),
+    <m:MessageDef> => Definition::MessageDef(Commented::new(m, vec![])),
+    <c:ConstDef> => Definition::ConstDef(Commented::new(c, vec![])),
+    <i:ImportDef> => Definition::ImportDef(Commented::new(i, vec![])),
+};
+
 ModuleDef: ModuleDef = {
-    "module" <scoped_name:ScopedName> "{" <defs:Definition*> "}" ";" => {
+    "module" <scoped_name:ScopedName> "{" <defs:DefinitionList> "}" ";" => {
         // Inline expansion of scoped module names into nested modules
         // module A::B::C { defs } becomes module A { module B { module C { defs } } }
         {
@@ -216,7 +221,7 @@ EnumMember: EnumMember = {
     <comments:CommentList> <name:Identifier> <value:EnumValue?> => EnumMember {
         name,
         value,
-        comments,
+        comments: comments.into_iter().map(|(_, s)| s).collect(),
     }
 };
 
@@ -225,18 +230,26 @@ EnumValue: ConstValue = {
 };
 
 StructDef: StructDef = {
-    "struct" <name:Identifier> <base:StructInheritance> "{" <members:MemberList> "}" ";" => StructDef {
-        name,
-        members,
-        base,
+    "struct" <name:Identifier> <base:StructInheritance> "{" <result:MemberList> "}" ";" => {
+        let (unsplit, mut members) = result;
+        if let Some(first) = members.first_mut() {
+            let mut preceding: Vec<String> = unsplit.into_iter().map(|(_, s)| s).collect();
+            preceding.append(&mut first.comments);
+            first.comments = preceding;
+        }
+        StructDef { name, members, base }
     }
 };
 
 MessageDef: MessageDef = {
-    "message" <name:Identifier> <base:StructInheritance> "{" <members:MemberList> "}" ";" => MessageDef {
-        name,
-        members,
-        base,
+    "message" <name:Identifier> <base:StructInheritance> "{" <result:MemberList> "}" ";" => {
+        let (unsplit, mut members) = result;
+        if let Some(first) = members.first_mut() {
+            let mut preceding: Vec<String> = unsplit.into_iter().map(|(_, s)| s).collect();
+            preceding.append(&mut first.comments);
+            first.comments = preceding;
+        }
+        MessageDef { name, members, base }
     }
 };
 
@@ -245,12 +258,36 @@ StructInheritance: Option<Vec<String>> = {
     => None,
 };
 
-MemberList: Vec<Commented<Member>> = {
-    => vec![],
-    <comments:CommentList> <annotations:AnnotationList> <m:Member> <rest:MemberList> => {
-        let mut list = vec![Commented::with_annotations(m, comments, annotations)];
-        list.extend(rest);
-        list
+// Returns (unsplit_comments, members):
+// - unsplit_comments: positioned comments before the first member that the
+//   caller must assign (the caller knows the previous member's end position).
+// - members: list where each member already has its trailing comments but the
+//   first member may still be missing its preceding comments.
+MemberList: (Vec<(usize, String)>, Vec<Commented<Member>>) = {
+    <trailing:CommentList> => (trailing, vec![]),
+    <comments:CommentList> <annotations:AnnotationList> <m:Member> <end:@R> <rest:MemberList> => {
+        let (unsplit, mut rest_members) = rest;
+
+        // Find end of line where our member's ";" lives
+        let line_end = source[end..].find('\n').map(|i| end + i).unwrap_or(source.len());
+
+        // Split unsplit into trailing (same line as our ;) and preceding (later lines)
+        let split_idx = unsplit.iter().position(|(pos, _)| *pos > line_end).unwrap_or(unsplit.len());
+        let trailing: Vec<String> = unsplit[..split_idx].iter().map(|(_, s)| s.clone()).collect();
+        let preceding: Vec<String> = unsplit[split_idx..].iter().map(|(_, s)| s.clone()).collect();
+
+        // Attach preceding to first rest member
+        if !preceding.is_empty() && let Some(first) = rest_members.first_mut() {
+            let mut new_comments = preceding;
+            new_comments.append(&mut first.comments);
+            first.comments = new_comments;
+        }
+
+        // Build our member with trailing only (preceding will be added by our caller)
+        let commented = Commented::with_annotations(m, trailing, annotations);
+        rest_members.insert(0, commented);
+
+        (comments, rest_members)
     }
 };
 
