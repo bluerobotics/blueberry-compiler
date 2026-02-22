@@ -6,7 +6,19 @@ use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
 use blueberry_parser::{Commented, Definition, ModuleDef, ParseError, parse_idl};
-use clap::Parser;
+use clap::{
+    Parser,
+    builder::styling::{AnsiColor, Styles},
+};
+
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Blue.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default())
+    .error(AnsiColor::Red.on_default().bold())
+    .valid(AnsiColor::Cyan.on_default().bold())
+    .invalid(AnsiColor::Yellow.on_default().bold());
 use std::{
     error::Error,
     fmt, fs,
@@ -84,7 +96,8 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
 #[command(
     name = "blueberry-cli",
     version,
-    about = "Parse Blueberry IDL files and optionally emit normalized IDL or Rust source."
+    about = "Parse Blueberry IDL files and optionally emit normalized IDL or Rust source.",
+    styles = STYLES,
 )]
 struct CliOptions {
     /// Path to an IDL source file or a directory of IDL files.

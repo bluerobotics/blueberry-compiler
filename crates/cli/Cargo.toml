@@ -11,5 +11,5 @@ blueberry-generator-c = { path = "../generators/c", version = "0.1.0" }
 blueberry-generator-cpp = { path = "../generators/cpp", version = "0.1.0" }
 blueberry-generator-python = { path = "../generators/python", version = "0.1.0" }
 blueberry-codegen-core = { path = "../generators/codegen-core", version = "0.1.0" }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "color"] }
 ariadne = "0.4"
