@@ -1,0 +1,10 @@
+[package]
+name = "blueberry-test"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_repr = "0.1"
+serde_json = "1"
+blueberry-serde = { git = "https://github.com/patrickelectric/blueberry-serde" }
