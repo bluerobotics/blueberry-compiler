@@ -5,11 +5,12 @@ use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
-use blueberry_parser::{Commented, Definition, ModuleDef, ParseError, parse_idl};
+use blueberry_parser::{Annotation, Commented, Definition, ModuleDef, ParseError, parse_idl};
 use clap::{
     Parser,
     builder::styling::{AnsiColor, Styles},
 };
+use std::collections::HashMap;
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Blue.on_default().bold())
@@ -69,6 +70,7 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
     if options.emit_rust {
         let files = generate_rust(&definitions).map_err(|err| fmt_codegen_error("Rust", err))?;
         write_generated_files("Rust", &output_root, &files)?;
+        run_rustfmt(&output_root, &files);
     }
 
     if options.emit_c {
@@ -263,6 +265,8 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
         merge_definitions(&mut all_defs, wrapped);
     }
 
+    propagate_module_key_annotations(&mut all_defs);
+
     Ok(all_defs)
 }
 
@@ -284,6 +288,55 @@ fn collect_idl_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn is_module_key_annotation(ann: &Annotation) -> bool {
+    ann.name
+        .last()
+        .map(|s| s.eq_ignore_ascii_case("module_key"))
+        .unwrap_or(false)
+}
+
+fn propagate_module_key_annotations(definitions: &mut [Definition]) {
+    let mut module_keys: HashMap<String, Annotation> = HashMap::new();
+    collect_module_key_annotations(definitions, &mut module_keys);
+    if !module_keys.is_empty() {
+        apply_module_key_annotations(definitions, &module_keys);
+    }
+}
+
+fn collect_module_key_annotations(
+    definitions: &[Definition],
+    keys: &mut HashMap<String, Annotation>,
+) {
+    for def in definitions {
+        if let Definition::ModuleDef(module) = def {
+            if let Some(ann) = module
+                .annotations
+                .iter()
+                .find(|a| is_module_key_annotation(a))
+            {
+                keys.entry(module.node.name.clone())
+                    .or_insert_with(|| ann.clone());
+            }
+            collect_module_key_annotations(&module.node.definitions, keys);
+        }
+    }
+}
+
+fn apply_module_key_annotations(
+    definitions: &mut [Definition],
+    keys: &HashMap<String, Annotation>,
+) {
+    for def in definitions.iter_mut() {
+        if let Definition::ModuleDef(module) = def {
+            let has_mk = module.annotations.iter().any(is_module_key_annotation);
+            if !has_mk && let Some(ann) = keys.get(&module.node.name) {
+                module.annotations.push(ann.clone());
+            }
+            apply_module_key_annotations(&mut module.node.definitions, keys);
+        }
+    }
 }
 
 /// Wraps definitions in nested modules matching the given path segments.
@@ -351,6 +404,49 @@ fn fmt_codegen_error(language: &str, err: CodegenError) -> Box<dyn Error> {
         ),
     };
     message.into()
+}
+
+fn run_rustfmt(output_root: &Path, files: &[GeneratedFile]) {
+    use std::io::Write;
+
+    let rs_paths: Vec<_> = files
+        .iter()
+        .filter(|f| f.path.ends_with(".rs"))
+        .map(|f| output_root.join(&f.path))
+        .collect();
+
+    if rs_paths.is_empty() {
+        return;
+    }
+
+    let mut formatted = 0usize;
+    for path in &rs_paths {
+        let Ok(source) = fs::read_to_string(path) else {
+            continue;
+        };
+        let result = std::process::Command::new("rustfmt")
+            .arg("--edition")
+            .arg("2021")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.take().unwrap().write_all(source.as_bytes())?;
+                child.wait_with_output()
+            });
+        match result {
+            Ok(out) if out.status.success() => {
+                let _ = fs::write(path, &out.stdout);
+                formatted += 1;
+            }
+            _ => {}
+        }
+    }
+    println!(
+        "Formatted {formatted}/{} Rust files with rustfmt",
+        rs_paths.len()
+    );
 }
 
 fn write_generated_files(
