@@ -5,7 +5,7 @@ use blueberry_ast::{
 pub mod type_registry;
 pub use type_registry::{ResolvedMember, TypeRegistry, map_builtin_ident};
 
-pub const DEFAULT_MODULE_KEY: u16 = 0x4242;
+pub const DEFAULT_MODULE_KEY: u16 = 0;
 pub const MESSAGE_HEADER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

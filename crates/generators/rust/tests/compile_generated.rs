@@ -1,6 +1,22 @@
 use blueberry_generator_rust::generate_rust;
 use blueberry_parser::parse_idl;
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, io, path::Path, path::PathBuf, process::Command};
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            fs::write(&dest_path, fs::read_to_string(&src_path)?)?;
+        }
+    }
+    Ok(())
+}
 
 fn compile_fixture(relative_path: &str) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -16,6 +32,7 @@ fn compile_fixture(relative_path: &str) {
     let files = generate_rust(&definitions).expect("generation should succeed");
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+
     for file in &files {
         let path = temp_dir.path().join(&file.path);
         if let Some(parent) = path.parent() {
@@ -23,12 +40,14 @@ fn compile_fixture(relative_path: &str) {
         }
         fs::write(&path, &file.contents).expect("failed to write generated rust file");
     }
-    let source_path = temp_dir.path().join("rust").join("blueberry_generated.rs");
+
+    let root_path = temp_dir.path().join("rust/mod.rs");
     assert!(
-        source_path.exists(),
+        root_path.exists(),
         "root generated file should exist at {}",
-        source_path.display()
+        root_path.display()
     );
+
     if let Ok(dir) = std::env::var("BLUEBERRY_DUMP_GENERATED") {
         for file in &files {
             let dump_path = PathBuf::from(&dir).join(file.path.clone());
@@ -39,6 +58,7 @@ fn compile_fixture(relative_path: &str) {
             eprintln!("Wrote generated output to {}", dump_path.display());
         }
     }
+
     let manifest_path = temp_dir.path().join("Cargo.toml");
     fs::write(
         &manifest_path,
@@ -49,28 +69,21 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-cdr = "0.2"
-zenoh = "1.6.2"
+serde_repr = "0.1"
+blueberry-serde = { git = "https://github.com/patrickelectric/blueberry-serde" }
 "#,
     )
     .expect("failed to write Cargo.toml");
 
-    // Place generated files where Cargo expects them.
     let src_dir = temp_dir.path().join("src");
     fs::create_dir_all(&src_dir).expect("failed to create src directory");
-    fs::write(
-        src_dir.join("lib.rs"),
-        fs::read_to_string(&source_path).unwrap(),
-    )
-    .expect("failed to copy root file");
-    let runtime_src = temp_dir.path().join("rust/blueberry_generated/runtime.rs");
-    let runtime_dest = src_dir.join("blueberry_generated");
-    fs::create_dir_all(&runtime_dest).expect("failed to create runtime directory");
-    fs::write(
-        runtime_dest.join("runtime.rs"),
-        fs::read_to_string(runtime_src).unwrap(),
-    )
-    .expect("failed to copy runtime file");
+
+    fs::write(src_dir.join("lib.rs"), "pub mod blueberry;\n").expect("failed to write lib.rs");
+
+    let rust_src = temp_dir.path().join("rust");
+    let blueberry_dest = src_dir.join("blueberry");
+    copy_dir_recursive(&rust_src, &blueberry_dest)
+        .expect("failed to copy generated files into src/blueberry/");
 
     let output = Command::new("cargo")
         .arg("check")

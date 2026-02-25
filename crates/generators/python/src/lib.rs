@@ -1,20 +1,28 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use blueberry_ast::{
     Annotation, AnnotationParam, Commented, ConstDef, ConstValue, Definition, EnumDef, MessageDef,
-    StructDef, Type, TypeDef,
+    ModuleDef, StructDef, Type, TypeDef,
 };
-use blueberry_codegen_core::{CodegenError, GeneratedFile, TypeRegistry};
+use blueberry_codegen_core::{CodegenError, DEFAULT_MODULE_KEY, GeneratedFile, TypeRegistry};
 use genco::lang::python::Tokens;
 use genco::quote;
 
-const OUTPUT_PATH: &str = "python/messages.py";
-
 pub fn generate(definitions: &[Definition]) -> Result<Vec<GeneratedFile>, CodegenError> {
     let generator = PythonGenerator::new(definitions);
-    let contents = generator.render(definitions)?;
-    Ok(vec![GeneratedFile {
-        path: OUTPUT_PATH.to_string(),
-        contents,
-    }])
+    generator.generate_files(definitions)
+}
+
+struct FileModule {
+    scope: Vec<String>,
+    definitions: Vec<Definition>,
+}
+
+struct MessageInfo {
+    class_name: String,
+    python_module: String,
+    module_key: u16,
+    message_key: u16,
 }
 
 struct PythonGenerator {
@@ -28,19 +36,224 @@ impl PythonGenerator {
         }
     }
 
-    fn render(&self, definitions: &[Definition]) -> Result<String, CodegenError> {
-        let defs = self.emit_definitions(definitions, &mut Vec::new())?;
-        let helpers = helpers_tokens();
+    fn generate_files(
+        &self,
+        definitions: &[Definition],
+    ) -> Result<Vec<GeneratedFile>, CodegenError> {
+        let file_modules = Self::partition_into_file_modules(definitions);
+
+        let type_locations = self.build_type_locations(&file_modules);
+
+        let mut generated = Vec::new();
+        let mut package_dirs: BTreeSet<String> = BTreeSet::new();
+
+        for fm in &file_modules {
+            let file_path = scope_to_file_path(&fm.scope);
+
+            let mut dir = std::path::Path::new(&file_path);
+            while let Some(parent) = dir.parent() {
+                let p = parent.to_string_lossy().to_string();
+                if p.is_empty() {
+                    break;
+                }
+                package_dirs.insert(p.clone());
+                dir = parent;
+            }
+
+            let contents = self.render_file_module(fm, &type_locations)?;
+            generated.push(GeneratedFile {
+                path: file_path,
+                contents,
+            });
+        }
+
+        for dir in &package_dirs {
+            generated.push(GeneratedFile {
+                path: format!("{dir}/__init__.py"),
+                contents: String::new(),
+            });
+        }
+
+        let messages = self.collect_all_message_info(&file_modules);
+        if !messages.is_empty() {
+            generated.push(GeneratedFile {
+                path: "python/message.py".to_string(),
+                contents: self.emit_root_init(&messages),
+            });
+        }
+
+        Ok(generated)
+    }
+
+    fn partition_into_file_modules(definitions: &[Definition]) -> Vec<FileModule> {
+        let (defs, root_scope) = skip_wrapper_modules(definitions);
+
+        let groups: Vec<&Commented<ModuleDef>> = defs
+            .iter()
+            .filter_map(|d| match d {
+                Definition::ModuleDef(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+
+        let has_non_modules = defs
+            .iter()
+            .any(|d| !matches!(d, Definition::ModuleDef(_) | Definition::ImportDef(_)));
+
+        if has_non_modules || groups.is_empty() {
+            return vec![FileModule {
+                scope: if root_scope.is_empty() {
+                    vec!["messages".to_string()]
+                } else {
+                    root_scope
+                },
+                definitions: defs.to_vec(),
+            }];
+        }
+
+        let mut result = Vec::new();
+
+        for group in &groups {
+            let mut group_scope = root_scope.clone();
+            group_scope.push(group.node.name.clone());
+
+            let child_modules: Vec<&Commented<ModuleDef>> = group
+                .node
+                .definitions
+                .iter()
+                .filter_map(|d| match d {
+                    Definition::ModuleDef(m) => Some(m),
+                    _ => None,
+                })
+                .collect();
+
+            let group_has_defs = group
+                .node
+                .definitions
+                .iter()
+                .any(|d| !matches!(d, Definition::ModuleDef(_) | Definition::ImportDef(_)));
+
+            if child_modules.is_empty() || group_has_defs {
+                result.push(FileModule {
+                    scope: group_scope,
+                    definitions: group.node.definitions.clone(),
+                });
+            } else {
+                for child in child_modules {
+                    let mut child_scope = group_scope.clone();
+                    child_scope.push(child.node.name.clone());
+                    result.push(FileModule {
+                        scope: child_scope,
+                        definitions: child.node.definitions.clone(),
+                    });
+                }
+            }
+        }
+
+        result
+    }
+
+    fn build_type_locations(
+        &self,
+        file_modules: &[FileModule],
+    ) -> BTreeMap<Vec<String>, (Vec<String>, String)> {
+        let mut map = BTreeMap::new();
+        for fm in file_modules {
+            Self::collect_type_locations(&fm.definitions, &fm.scope, &[], &mut map);
+        }
+        map
+    }
+
+    fn collect_type_locations(
+        definitions: &[Definition],
+        file_scope: &[String],
+        inner_scope: &[String],
+        map: &mut BTreeMap<Vec<String>, (Vec<String>, String)>,
+    ) {
+        for def in definitions {
+            match def {
+                Definition::ModuleDef(m) => {
+                    let mut new_inner: Vec<String> = inner_scope.to_vec();
+                    new_inner.push(m.node.name.clone());
+                    Self::collect_type_locations(&m.node.definitions, file_scope, &new_inner, map);
+                }
+                Definition::EnumDef(e) => {
+                    let mut full_path = file_scope.to_vec();
+                    full_path.extend(inner_scope.iter().cloned());
+                    full_path.push(e.node.name.clone());
+                    map.insert(full_path, (file_scope.to_vec(), e.node.name.clone()));
+                }
+                Definition::StructDef(s) => {
+                    let mut full_path = file_scope.to_vec();
+                    full_path.extend(inner_scope.iter().cloned());
+                    full_path.push(s.node.name.clone());
+                    map.insert(full_path, (file_scope.to_vec(), s.node.name.clone()));
+                }
+                Definition::MessageDef(m) => {
+                    let mut full_path = file_scope.to_vec();
+                    full_path.extend(inner_scope.iter().cloned());
+                    full_path.push(m.node.name.clone());
+                    map.insert(full_path, (file_scope.to_vec(), m.node.name.clone()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn render_file_module(
+        &self,
+        fm: &FileModule,
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+    ) -> Result<String, CodegenError> {
+        let mut imports_needed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let defs = self.emit_file_definitions(
+            &fm.definitions,
+            &fm.scope,
+            &mut Vec::new(),
+            None,
+            type_locations,
+            &mut imports_needed,
+        )?;
+
+        let wire_types = self.collect_wire_types_in(&fm.definitions, &fm.scope, &[]);
+        let wire_type_imports = if wire_types.is_empty() {
+            Tokens::new()
+        } else {
+            let joined = wire_types.join(", ");
+            quote!(from blueberry_serde.types import $joined)
+        };
+
+        let cross_imports: Vec<Tokens> = imports_needed
+            .iter()
+            .flat_map(|(module, names)| {
+                names.iter().map(move |name| {
+                    let m = module.clone();
+                    let n = name.clone();
+                    quote!(from $m import $n)
+                })
+            })
+            .collect();
+
         let tokens: Tokens = quote! {
             # Auto-generated Blueberry bindings
 
             from __future__ import annotations
-            from dataclasses import dataclass
             import enum
-            import struct
-            from typing import ClassVar, Callable, List
+            from typing import Annotated, ClassVar
 
-            $helpers
+            from pydantic import BaseModel
+
+            from blueberry_serde import (
+                serialize,
+                deserialize,
+                serialize_message,
+                deserialize_message,
+                serialize_packet,
+                deserialize_packet,
+                empty_message,
+            )
+            $wire_type_imports
+            $(for imp in &cross_imports => $imp$['\r'])
 
             $(for def in defs =>
                 $def
@@ -51,10 +264,14 @@ impl PythonGenerator {
         Ok(tokens.to_file_string().expect("render python output"))
     }
 
-    fn emit_definitions(
+    fn emit_file_definitions(
         &self,
         defs: &[Definition],
-        scope: &mut Vec<String>,
+        file_scope: &[String],
+        inner_scope: &mut Vec<String>,
+        parent_module_key: Option<u16>,
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<Vec<Tokens>, CodegenError> {
         let mut out = Vec::new();
         let mut message_keys = MessageKeyGen::default();
@@ -62,34 +279,64 @@ impl PythonGenerator {
         for def in defs {
             match def {
                 Definition::ModuleDef(module) => {
-                    scope.push(module.node.name.clone());
-                    let nested = self.emit_definitions(&module.node.definitions, scope)?;
+                    let mk =
+                        annotation_u16(&module.annotations, "module_key").or(parent_module_key);
+                    inner_scope.push(module.node.name.clone());
+                    let nested = self.emit_file_definitions(
+                        &module.node.definitions,
+                        file_scope,
+                        inner_scope,
+                        mk,
+                        type_locations,
+                        imports_needed,
+                    )?;
                     out.extend(nested);
-                    scope.pop();
+                    inner_scope.pop();
                 }
                 Definition::EnumDef(enum_def) => {
                     out.push(quote! { $['\n'] });
-                    out.push(self.emit_enum(enum_def, scope));
+                    out.push(self.emit_enum_local(enum_def));
                 }
                 Definition::StructDef(struct_def) => {
                     out.push(quote! { $['\n'] });
-                    out.push(self.emit_struct(struct_def, scope));
+                    out.push(self.emit_struct_local(
+                        struct_def,
+                        file_scope,
+                        inner_scope,
+                        type_locations,
+                        imports_needed,
+                    ));
                 }
                 Definition::MessageDef(message_def) => {
-                    let module_key =
-                        annotation_u16(&message_def.annotations, "module_key").unwrap_or(0x4242);
+                    let module_key = annotation_u16(&message_def.annotations, "module_key")
+                        .or(parent_module_key)
+                        .unwrap_or(DEFAULT_MODULE_KEY);
                     let message_key = annotation_u16(&message_def.annotations, "message_key")
                         .unwrap_or_else(|| message_keys.next());
                     out.push(quote! { $['\n'] });
-                    out.push(self.emit_message(message_def, scope, module_key, message_key)?);
+                    out.push(self.emit_message_local(
+                        message_def,
+                        file_scope,
+                        inner_scope,
+                        module_key,
+                        message_key,
+                        type_locations,
+                        imports_needed,
+                    )?);
                 }
                 Definition::ConstDef(const_def) => {
                     out.push(quote! { $['\r'] });
-                    out.push(self.emit_const(const_def, scope));
+                    out.push(self.emit_const_local(const_def, inner_scope));
                 }
                 Definition::TypeDef(typedef_def) => {
                     out.push(quote! { $['\r'] });
-                    out.push(self.emit_typedef(typedef_def, scope));
+                    out.push(self.emit_typedef_local(
+                        typedef_def,
+                        file_scope,
+                        inner_scope,
+                        type_locations,
+                        imports_needed,
+                    ));
                 }
                 Definition::ImportDef(_) => {}
             }
@@ -98,8 +345,8 @@ impl PythonGenerator {
         Ok(out)
     }
 
-    fn emit_enum(&self, enum_def: &Commented<EnumDef>, scope: &[String]) -> Tokens {
-        let name = class_name(scope, &enum_def.node.name);
+    fn emit_enum_local(&self, enum_def: &Commented<EnumDef>) -> Tokens {
+        let name = enum_def.node.name.clone();
         let members: Vec<Tokens> = enum_def
             .node
             .enumerators
@@ -122,478 +369,633 @@ impl PythonGenerator {
         quote! {
             class $name(enum.IntEnum):
                 $(for m in members =>
-                    $m
+                    $m$['\r']
                 )
         }
     }
 
-    fn emit_struct(&self, struct_def: &Commented<StructDef>, scope: &[String]) -> Tokens {
-        let mut path = scope.to_vec();
-        path.push(struct_def.node.name.clone());
-        let members = self.registry.collect_struct_members(&path);
-        let name = class_name(scope, &struct_def.node.name);
-        let name_ref = name.as_str();
+    fn emit_struct_local(
+        &self,
+        struct_def: &Commented<StructDef>,
+        file_scope: &[String],
+        inner_scope: &[String],
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Tokens {
+        let mut full_path = file_scope.to_vec();
+        full_path.extend(inner_scope.iter().cloned());
+        full_path.push(struct_def.node.name.clone());
+        let mut members = self.registry.collect_struct_members(&full_path);
+        self.registry.sort_members_by_alignment(&mut members);
+        let name = struct_def.node.name.clone();
         let fields: Tokens = quote! {
             $(for member in &members =>
-                $(member.name.clone()): $(python_type_hint(&member.ty, scope, &self.registry))$['\r']
+                $(member.name.clone()): $(self.python_type_annotation_local(&member.ty, file_scope, inner_scope, type_locations, imports_needed))$['\r']
             )
         };
-        let serialize_fields: Vec<Tokens> = members
-            .iter()
-            .map(|member| self.serialize_value(&member.name, &member.ty, scope))
-            .collect();
-        let deserialize_fields: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let var_name = format!("value_{}", member.name);
-                let read_expr = self.deserialize_value(&member.ty, scope);
-                quote!( $var_name = $read_expr )
-            })
-            .collect();
-        let assignments: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let var_name = format!("value_{}", member.name);
-                let field = &member.name;
-                quote!( $field=$var_name )
-            })
-            .collect();
 
         quote! {
-            @dataclass
-            class $name_ref:
+            class $name(BaseModel):
                 $fields
-
-                def to_payload(self) -> bytes:
-                    writer = CdrWriter()
-                    self.serialize(writer)
-                    return bytes(writer.buffer)
-
-                def serialize(self, writer: "CdrWriter") -> None:
-                    $(for s in &serialize_fields =>$s$['\r'])
-
-                @classmethod
-                def from_payload(cls, payload: bytes) -> $name_ref:
-                    reader = CdrReader(payload)
-                    return cls.read(reader)
-
-                @classmethod
-                def read(cls, reader: "CdrReader") -> $name_ref:
-                    $(for d in &deserialize_fields => $d$['\r'])
-                    return cls($(for a in &assignments join (, ) => $a))
         }
     }
 
-    fn emit_message(
+    #[allow(clippy::too_many_arguments)]
+    fn emit_message_local(
         &self,
         message_def: &Commented<MessageDef>,
-        scope: &[String],
+        file_scope: &[String],
+        inner_scope: &[String],
         module_key: u16,
         message_key: u16,
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<Tokens, CodegenError> {
+        let mut scope_for_lookup = file_scope.to_vec();
+        scope_for_lookup.extend(inner_scope.iter().cloned());
+
         let topic = annotation_string(&message_def.annotations, "topic").ok_or(
             CodegenError::MissingTopic {
-                message: scoped_name(scope, &message_def.node.name),
+                message: scoped_name(&scope_for_lookup, &message_def.node.name),
             },
         )?;
-        let mut path = scope.to_vec();
-        path.push(message_def.node.name.clone());
-        let members = self.registry.collect_message_members(&path);
-        let name = class_name(scope, &message_def.node.name);
-        let name_ref = name.as_str();
+
+        let mut full_path = scope_for_lookup.clone();
+        full_path.push(message_def.node.name.clone());
+        let mut members = self.registry.collect_message_members(&full_path);
+        self.registry.sort_members_by_alignment(&mut members);
+        let name = message_def.node.name.clone();
         let fields: Tokens = quote! {
             $(for member in &members =>
-                $(member.name.clone()): $(python_type_hint(&member.ty, scope, &self.registry))$['\r']
+                $(member.name.clone()): $(self.python_type_annotation_local(&member.ty, file_scope, inner_scope, type_locations, imports_needed))$['\r']
             )
         };
-        let serialize_fields: Vec<Tokens> = members
-            .iter()
-            .map(|member| self.serialize_value(&member.name, &member.ty, scope))
-            .collect();
-        let deserialize_fields: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let var_name = format!("value_{}", member.name);
-                let read_expr = self.deserialize_value(&member.ty, scope);
-                quote!( $var_name = $read_expr )
-            })
-            .collect();
-        let assignments: Vec<Tokens> = members
-            .iter()
-            .map(|member| {
-                let var_name = format!("value_{}", member.name);
-                let field = &member.name;
-                quote!( $field=$var_name )
-            })
-            .collect();
         let topic_literal = quoted_string(&topic);
 
         Ok(quote! {
-            @dataclass
-            class $name_ref:
+            class $name(BaseModel):
                 topic_template: ClassVar[str] = $topic_literal
                 module_key: ClassVar[int] = $module_key
                 message_key: ClassVar[int] = $message_key
 
                 $fields
 
-                def to_payload(self) -> bytes:
-                    writer = CdrWriter()
-                    self.serialize(writer)
-                    return bytes(writer.buffer)
-
-                def serialize(self, writer: "CdrWriter") -> None:
-                    $(for s in &serialize_fields => $s$['\r'])
-
                 @classmethod
-                def from_payload(cls, payload: bytes) -> $name_ref:
-                    reader = CdrReader(payload)
-                    return cls.read(reader)
-
-                @classmethod
-                def read(cls, reader: "CdrReader") -> $name_ref:
-                    $(for d in &deserialize_fields => $d$['\r'])
-                    return cls($(for a in &assignments join (, ) => $a))
-
-                @classmethod
-                def from_frame(cls, frame: bytes) -> $name_ref:
-                    header = MessageHeader.parse(frame)
-                    payload_len = header.payload_words * 4
-                    payload = frame[MessageHeader.HEADER_LEN:MessageHeader.HEADER_LEN + payload_len]
-                    return cls.from_payload(payload)
-
-                @classmethod
-                def topic(cls, device_type: str, nid: str) -> str:
-                    return cls.topic_template.format(device_type=device_type, nid=nid)
-
-                @staticmethod
-                def subscribe(session, device_type: str, nid: str, callback) -> None:
-                    topic = $name_ref.topic(device_type, nid)
-                    session.subscribe(topic, lambda frame: callback($name_ref.from_frame(frame)))
-
-                def publish(self, session, device_type: str, nid: str) -> None:
-                    topic = self.topic(device_type, nid)
-                    payload = self.to_payload()
-                    header = MessageHeader(CdrWriter.payload_words_for(payload), 0, self.module_key, self.message_key)
-                    session.put(topic, header.pack() + payload)
-
-                @staticmethod
-                def payload_words(payload: bytes) -> int:
-                    return CdrWriter.payload_words_for(payload)
+                def topic(cls, **kwargs: str) -> str:
+                    return cls.topic_template.format(**kwargs)
         })
     }
 
-    fn emit_const(&self, const_def: &Commented<ConstDef>, scope: &[String]) -> Tokens {
-        let name = class_name(scope, &const_def.node.name);
+    fn emit_const_local(&self, const_def: &Commented<ConstDef>, inner_scope: &[String]) -> Tokens {
+        let name = local_name(inner_scope, &const_def.node.name);
         let value = const_literal(&const_def.node.value);
         quote!( $name = $value )
     }
 
-    fn emit_typedef(&self, typedef_def: &Commented<TypeDef>, scope: &[String]) -> Tokens {
-        let name = class_name(scope, &typedef_def.node.name);
-        let base = python_type_hint(&typedef_def.node.base_type, scope, &self.registry);
+    fn emit_typedef_local(
+        &self,
+        typedef_def: &Commented<TypeDef>,
+        file_scope: &[String],
+        inner_scope: &[String],
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Tokens {
+        let name = local_name(inner_scope, &typedef_def.node.name);
+        let mut full_scope = file_scope.to_vec();
+        full_scope.extend(inner_scope.iter().cloned());
+        let base = self.python_type_hint_local(
+            &typedef_def.node.base_type,
+            file_scope,
+            &full_scope,
+            type_locations,
+            imports_needed,
+        );
         quote!( $name = $base )
     }
 
-    fn serialize_value(&self, name: &str, ty: &Type, scope: &[String]) -> Tokens {
-        match self.registry.resolve_type(ty, scope) {
-            Type::Boolean => quote!( writer.write_bool(self.$name) ),
-            Type::Char => quote!( writer.write_char(self.$name) ),
-            Type::Octet => quote!( writer.write_u8(self.$name) ),
-            Type::Short => quote!( writer.write_i16(self.$name) ),
-            Type::UnsignedShort => quote!( writer.write_u16(self.$name) ),
-            Type::Long => quote!( writer.write_i32(self.$name) ),
-            Type::UnsignedLong => quote!( writer.write_u32(self.$name) ),
-            Type::LongLong => quote!( writer.write_i64(self.$name) ),
-            Type::UnsignedLongLong => quote!( writer.write_u64(self.$name) ),
-            Type::Float => quote!( writer.write_f32(self.$name) ),
-            Type::Double => quote!( writer.write_f64(self.$name) ),
-            Type::String { .. } => quote!( writer.write_string(self.$name) ),
+    fn python_type_annotation_local(
+        &self,
+        ty: &Type,
+        file_scope: &[String],
+        inner_scope: &[String],
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Tokens {
+        let mut full_scope = file_scope.to_vec();
+        full_scope.extend(inner_scope.iter().cloned());
+        let resolved = self.registry.resolve_type(ty, &full_scope);
+        match &resolved {
+            Type::Boolean => quote!(bool),
+            Type::Char => quote!(str),
+            Type::Octet => quote!(Annotated[int, UInt8]),
+            Type::Short => quote!(Annotated[int, Int16]),
+            Type::UnsignedShort => quote!(Annotated[int, UInt16]),
+            Type::Long => quote!(Annotated[int, Int32]),
+            Type::UnsignedLong => quote!(Annotated[int, UInt32]),
+            Type::LongLong => quote!(Annotated[int, Int64]),
+            Type::UnsignedLongLong => quote!(Annotated[int, UInt64]),
+            Type::Float => quote!(Annotated[float, Float32]),
+            Type::Double => quote!(float),
+            Type::String { .. } => quote!(str),
             Type::Sequence { element_type, .. } => {
-                let inner = self.serialize_value("item", &element_type, scope);
-                quote! {
-                    writer.write_sequence(self.$name, lambda w, item: ($inner))
-                }
+                let inner = self.python_type_annotation_local(
+                    element_type,
+                    file_scope,
+                    inner_scope,
+                    type_locations,
+                    imports_needed,
+                );
+                quote!(list[$inner])
             }
             Type::Array {
                 element_type,
                 dimensions,
             } => {
-                let mut elem = *element_type;
+                let mut elem = *element_type.clone();
                 for _ in dimensions {
                     elem = Type::Sequence {
                         element_type: Box::new(elem),
                         size: None,
                     };
                 }
-                self.serialize_value(name, &elem, scope)
+                self.python_type_annotation_local(
+                    &elem,
+                    file_scope,
+                    inner_scope,
+                    type_locations,
+                    imports_needed,
+                )
             }
             Type::ScopedName(path) => {
-                if let Some(base) = self.registry.enum_base(&path) {
-                    let write_fn = writer_for(base);
-                    quote!( writer.$write_fn(int(self.$name)) )
+                let name_tok =
+                    self.resolve_scoped_ref(path, file_scope, type_locations, imports_needed);
+                if let Some(base) = self.registry.enum_base(path) {
+                    if let Some(wire) = wire_type_name(base) {
+                        quote!(Annotated[$name_tok, $wire])
+                    } else {
+                        name_tok
+                    }
                 } else {
-                    quote!( self.$name.serialize(writer) )
+                    name_tok
                 }
             }
-            Type::WString | Type::WChar | Type::LongDouble => quote!(None),
+            Type::WString | Type::WChar | Type::LongDouble => quote!(object),
         }
     }
 
-    fn deserialize_value(&self, ty: &Type, scope: &[String]) -> Tokens {
-        match self.registry.resolve_type(ty, scope) {
-            Type::Boolean => quote!(reader.read_bool()),
-            Type::Char => quote!(reader.read_char()),
-            Type::Octet => quote!(reader.read_u8()),
-            Type::Short => quote!(reader.read_i16()),
-            Type::UnsignedShort => quote!(reader.read_u16()),
-            Type::Long => quote!(reader.read_i32()),
-            Type::UnsignedLong => quote!(reader.read_u32()),
-            Type::LongLong => quote!(reader.read_i64()),
-            Type::UnsignedLongLong => quote!(reader.read_u64()),
-            Type::Float => quote!(reader.read_f32()),
-            Type::Double => quote!(reader.read_f64()),
-            Type::String { .. } => quote!(reader.read_string()),
+    fn python_type_hint_local(
+        &self,
+        ty: &Type,
+        file_scope: &[String],
+        resolve_scope: &[String],
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Tokens {
+        let resolved = self.registry.resolve_type(ty, resolve_scope);
+        match &resolved {
+            Type::Boolean => quote!(bool),
+            Type::Char => quote!(str),
+            Type::Octet
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::Long
+            | Type::UnsignedLong
+            | Type::LongLong
+            | Type::UnsignedLongLong => quote!(int),
+            Type::Float | Type::Double => quote!(float),
+            Type::String { .. } => quote!(str),
             Type::Sequence { element_type, .. } => {
-                let inner = self.deserialize_value(&element_type, scope);
-                quote! {
-                    reader.read_sequence(lambda r: ($inner))
-                }
+                let inner = self.python_type_hint_local(
+                    element_type,
+                    file_scope,
+                    resolve_scope,
+                    type_locations,
+                    imports_needed,
+                );
+                quote!(list[$inner])
             }
             Type::Array {
                 element_type,
                 dimensions,
             } => {
-                let mut elem = *element_type;
+                let mut elem = *element_type.clone();
                 for _ in dimensions {
                     elem = Type::Sequence {
                         element_type: Box::new(elem),
                         size: None,
                     };
                 }
-                self.deserialize_value(&elem, scope)
+                self.python_type_hint_local(
+                    &elem,
+                    file_scope,
+                    resolve_scope,
+                    type_locations,
+                    imports_needed,
+                )
             }
             Type::ScopedName(path) => {
-                if let Some(base) = self.registry.enum_base(&path) {
-                    let read_fn = reader_for(base);
-                    let scoped = class_name_path(&path);
-                    quote!( $scoped(reader.$read_fn()) )
-                } else {
-                    let scoped = class_name_path(&path);
-                    quote!( $scoped.read(reader) )
-                }
+                self.resolve_scoped_ref(path, file_scope, type_locations, imports_needed)
             }
-            Type::WString | Type::WChar | Type::LongDouble => quote!(None),
+            Type::WString | Type::WChar | Type::LongDouble => quote!(object),
         }
     }
-}
 
-fn helpers_tokens() -> Tokens {
-    quote! {
-        class CdrWriter:
-            def __init__(self) -> None:
-                self.buffer: bytearray = bytearray()
+    fn resolve_scoped_ref(
+        &self,
+        path: &[String],
+        file_scope: &[String],
+        type_locations: &BTreeMap<Vec<String>, (Vec<String>, String)>,
+        imports_needed: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Tokens {
+        if let Some((target_file_scope, local_name)) = type_locations.get(path) {
+            if target_file_scope == file_scope {
+                let ident = local_name.clone();
+                quote!($ident)
+            } else {
+                let python_module = scope_to_python_module(target_file_scope);
+                imports_needed
+                    .entry(python_module)
+                    .or_default()
+                    .insert(local_name.clone());
+                let ident = local_name.clone();
+                quote!($ident)
+            }
+        } else {
+            let ident = path.last().cloned().unwrap_or_default();
+            quote!($ident)
+        }
+    }
 
-            @staticmethod
-            def payload_words_for(payload: bytes) -> int:
-                return (len(payload) + 3) // 4
+    fn collect_wire_types_in(
+        &self,
+        defs: &[Definition],
+        file_scope: &[String],
+        inner_scope: &[String],
+    ) -> Vec<String> {
+        let mut types = BTreeSet::new();
+        self.walk_wire_types_in(defs, file_scope, inner_scope, &mut types);
+        types.into_iter().collect()
+    }
 
-            def align(self, alignment: int) -> None:
-                if alignment <= 1:
-                    return
-                pad = (alignment - (len(self.buffer) % alignment)) % alignment
-                if pad:
-                    self.buffer.extend(b"\x00" * pad)
+    fn walk_wire_types_in(
+        &self,
+        defs: &[Definition],
+        file_scope: &[String],
+        inner_scope: &[String],
+        out: &mut BTreeSet<String>,
+    ) {
+        for def in defs {
+            match def {
+                Definition::ModuleDef(module) => {
+                    let mut new_inner = inner_scope.to_vec();
+                    new_inner.push(module.node.name.clone());
+                    self.walk_wire_types_in(&module.node.definitions, file_scope, &new_inner, out);
+                }
+                Definition::StructDef(struct_def) => {
+                    let mut path = file_scope.to_vec();
+                    path.extend(inner_scope.iter().cloned());
+                    path.push(struct_def.node.name.clone());
+                    let members = self.registry.collect_struct_members(&path);
+                    for m in &members {
+                        let mut scope = file_scope.to_vec();
+                        scope.extend(inner_scope.iter().cloned());
+                        self.collect_wire_type_for(&m.ty, &scope, out);
+                    }
+                }
+                Definition::MessageDef(message_def) => {
+                    let mut path = file_scope.to_vec();
+                    path.extend(inner_scope.iter().cloned());
+                    path.push(message_def.node.name.clone());
+                    let members = self.registry.collect_message_members(&path);
+                    for m in &members {
+                        let mut scope = file_scope.to_vec();
+                        scope.extend(inner_scope.iter().cloned());
+                        self.collect_wire_type_for(&m.ty, &scope, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
-            def write_bool(self, value: bool) -> None:
-                self.align(1)
-                self.buffer.append(1 if value else 0)
+    fn collect_wire_type_for(&self, ty: &Type, scope: &[String], out: &mut BTreeSet<String>) {
+        let resolved = self.registry.resolve_type(ty, scope);
+        match &resolved {
+            Type::Octet => {
+                out.insert("UInt8".to_string());
+            }
+            Type::Short => {
+                out.insert("Int16".to_string());
+            }
+            Type::UnsignedShort => {
+                out.insert("UInt16".to_string());
+            }
+            Type::Long => {
+                out.insert("Int32".to_string());
+            }
+            Type::UnsignedLong => {
+                out.insert("UInt32".to_string());
+            }
+            Type::LongLong => {
+                out.insert("Int64".to_string());
+            }
+            Type::UnsignedLongLong => {
+                out.insert("UInt64".to_string());
+            }
+            Type::Float => {
+                out.insert("Float32".to_string());
+            }
+            Type::Sequence { element_type, .. } => {
+                self.collect_wire_type_for(element_type, scope, out);
+            }
+            Type::Array {
+                element_type,
+                dimensions,
+            } => {
+                let mut elem = *element_type.clone();
+                for _ in dimensions {
+                    elem = Type::Sequence {
+                        element_type: Box::new(elem),
+                        size: None,
+                    };
+                }
+                self.collect_wire_type_for(&elem, scope, out);
+            }
+            Type::ScopedName(path) => {
+                if let Some(base) = self.registry.enum_base(path)
+                    && let Some(wire) = wire_type_name(base)
+                {
+                    out.insert(wire.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
 
-            def write_char(self, value: str) -> None:
-                self.align(1)
-                b = value.encode("latin1") if value else b"\x00"
-                self.buffer.extend(b[:1].ljust(1, b"\x00"))
+    fn collect_all_message_info(&self, file_modules: &[FileModule]) -> Vec<MessageInfo> {
+        let mut result = Vec::new();
+        for fm in file_modules {
+            self.collect_message_info_from(&fm.definitions, &fm.scope, None, &mut result);
+        }
+        result
+    }
 
-            def write_u8(self, value: int) -> None:
-                self.align(1)
-                self.buffer.extend(struct.pack("<B", value))
+    fn collect_message_info_from(
+        &self,
+        definitions: &[Definition],
+        file_scope: &[String],
+        parent_module_key: Option<u16>,
+        result: &mut Vec<MessageInfo>,
+    ) {
+        for def in definitions {
+            match def {
+                Definition::ModuleDef(module) => {
+                    let mk =
+                        annotation_u16(&module.annotations, "module_key").or(parent_module_key);
+                    self.collect_message_info_from(
+                        &module.node.definitions,
+                        file_scope,
+                        mk,
+                        result,
+                    );
+                }
+                Definition::MessageDef(message_def) => {
+                    let explicit_msgk = annotation_u16(&message_def.annotations, "message_key");
+                    if explicit_msgk.is_none() {
+                        continue;
+                    }
+                    let module_key = annotation_u16(&message_def.annotations, "module_key")
+                        .or(parent_module_key)
+                        .unwrap_or(DEFAULT_MODULE_KEY);
+                    let python_module = scope_to_python_module(file_scope);
+                    result.push(MessageInfo {
+                        class_name: message_def.node.name.clone(),
+                        python_module,
+                        module_key,
+                        message_key: explicit_msgk.unwrap(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
 
-            def write_i16(self, value: int) -> None:
-                self.align(2)
-                self.buffer.extend(struct.pack("<h", value))
+    fn emit_root_init(&self, messages: &[MessageInfo]) -> String {
+        let mut imports = Vec::new();
+        let mut registry_entries = Vec::new();
+        let mut from_raw_arms = Vec::new();
+        let mut display_arms = Vec::new();
 
-            def write_u16(self, value: int) -> None:
-                self.align(2)
-                self.buffer.extend(struct.pack("<H", value))
+        for msg in messages {
+            imports.push(format!(
+                "from {} import {}",
+                msg.python_module, msg.class_name
+            ));
+            registry_entries.push(format!(
+                "    (0x{:04X}, 0x{:04X}): {},",
+                msg.module_key, msg.message_key, msg.class_name
+            ));
+            from_raw_arms.push(format!(
+                "            (0x{:04X}, 0x{:04X}): {name},",
+                msg.module_key,
+                msg.message_key,
+                name = msg.class_name
+            ));
+            display_arms.push(format!(
+                "        if isinstance(self.inner, {name}):\n\
+                 \x20           return \"{name}: \" + self.inner.model_dump_json(indent=2)",
+                name = msg.class_name
+            ));
+        }
 
-            def write_i32(self, value: int) -> None:
-                self.align(4)
-                self.buffer.extend(struct.pack("<i", value))
+        let imports_block = imports.join("\n");
+        let registry_block = registry_entries.join("\n");
+        let _from_raw_block = from_raw_arms.join("\n");
+        let display_block = display_arms.join("\n");
 
-            def write_u32(self, value: int) -> None:
-                self.align(4)
-                self.buffer.extend(struct.pack("<I", value))
+        let union_types = messages
+            .iter()
+            .map(|m| m.class_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
 
-            def write_i64(self, value: int) -> None:
-                self.align(8)
-                self.buffer.extend(struct.pack("<q", value))
-
-            def write_u64(self, value: int) -> None:
-                self.align(8)
-                self.buffer.extend(struct.pack("<Q", value))
-
-            def write_f32(self, value: float) -> None:
-                self.align(4)
-                self.buffer.extend(struct.pack("<f", value))
-
-            def write_f64(self, value: float) -> None:
-                self.align(8)
-                self.buffer.extend(struct.pack("<d", value))
-
-            def write_string(self, value: str) -> None:
-                self.align(4)
-                data = value.encode("utf-8") + b"\x00"
-                self.write_u32(len(data))
-                self.buffer.extend(data)
-
-            def write_sequence(self, values, write_fn: Callable[["CdrWriter", object], None]) -> None:
-                self.align(4)
-                self.write_u32(len(values))
-                for item in values:
-                    write_fn(self, item)
-
-        class CdrReader:
-            def __init__(self, data: bytes) -> None:
-                self.data = data
-                self.offset = 0
-
-            def align(self, alignment: int) -> None:
-                if alignment <= 1:
-                    return
-                pad = (alignment - (self.offset % alignment)) % alignment
-                if self.offset + pad > len(self.data):
-                    raise RuntimeError("cursor out of range")
-                self.offset += pad
-
-            def take(self, size: int) -> bytes:
-                if self.offset + size > len(self.data):
-                    raise RuntimeError("cursor out of range")
-                start = self.offset
-                self.offset += size
-                return self.data[start:self.offset]
-
-            def read_bool(self) -> bool:
-                self.align(1)
-                return bool(self.take(1)[0])
-
-            def read_char(self) -> str:
-                self.align(1)
-                return self.take(1).decode("latin1")
-
-            def read_u8(self) -> int:
-                self.align(1)
-                return struct.unpack("<B", self.take(1))[0]
-
-            def read_i16(self) -> int:
-                self.align(2)
-                return struct.unpack("<h", self.take(2))[0]
-
-            def read_u16(self) -> int:
-                self.align(2)
-                return struct.unpack("<H", self.take(2))[0]
-
-            def read_i32(self) -> int:
-                self.align(4)
-                return struct.unpack("<i", self.take(4))[0]
-
-            def read_u32(self) -> int:
-                self.align(4)
-                return struct.unpack("<I", self.take(4))[0]
-
-            def read_i64(self) -> int:
-                self.align(8)
-                return struct.unpack("<q", self.take(8))[0]
-
-            def read_u64(self) -> int:
-                self.align(8)
-                return struct.unpack("<Q", self.take(8))[0]
-
-            def read_f32(self) -> float:
-                self.align(4)
-                return struct.unpack("<f", self.take(4))[0]
-
-            def read_f64(self) -> float:
-                self.align(8)
-                return struct.unpack("<d", self.take(8))[0]
-
-            def read_string(self) -> str:
-                self.align(4)
-                length = self.read_u32()
-                if length == 0:
-                    return ""
-                data = self.take(length)
-                if data[-1] != 0:
-                    raise RuntimeError("CDR string missing null terminator")
-                return data[:-1].decode("utf-8")
-
-            def read_sequence(self, read_fn: Callable[["CdrReader"], object]):
-                self.align(4)
-                length = self.read_u32()
-                values = []
-                for _ in range(length):
-                    values.append(read_fn(self))
-                return values
-
-        @dataclass
-        class MessageHeader:
-            payload_words: int
-            flags: int
-            module_key: int
-            message_key: int
-
-            HEADER_LEN: ClassVar[int] = 8
-
-            def pack(self) -> bytes:
-                return struct.pack("<HHHH", self.payload_words, self.flags, self.module_key, self.message_key)
-
-            @classmethod
-            def parse(cls, raw: bytes) -> "MessageHeader":
-                payload_words, flags, module_key, message_key = struct.unpack("<HHHH", raw[: cls.HEADER_LEN])
-                return cls(payload_words, flags, module_key, message_key)
+        let mut out = String::new();
+        out.push_str("# Auto-generated Blueberry message registry\n");
+        out.push_str("\nfrom __future__ import annotations\n");
+        out.push_str("\nimport struct\n");
+        out.push_str("from dataclasses import dataclass\n");
+        out.push_str("from typing import Union\n");
+        out.push_str("\nfrom blueberry_serde import (\n");
+        out.push_str("    BLUEBERRY_PORT,\n");
+        out.push_str("    HEADER_SIZE,\n");
+        out.push_str("    PACKET_MAGIC,\n");
+        out.push_str("    MessageHeader,\n");
+        out.push_str("    deserialize_message,\n");
+        out.push_str("    deserialize_packet,\n");
+        out.push_str("    empty_message,\n");
+        out.push_str("    serialize_packet,\n");
+        out.push_str(")\n\n");
+        out.push_str(&imports_block);
+        out.push_str("\n\n_MESSAGE_REGISTRY: dict[tuple[int, int], type] = {\n");
+        out.push_str(&registry_block);
+        out.push_str("\n}\n");
+        out.push_str("\n\n@dataclass\nclass Message:\n");
+        out.push_str(&format!("    inner: Union[{union_types}]\n"));
+        out.push_str("    module_key: int\n");
+        out.push_str("    message_key: int\n");
+        out.push_str(concat!(
+            "\n    @staticmethod\n",
+            "    def from_raw(data: bytes) -> \"Message\":\n",
+            "        hdr = MessageHeader.decode(data)\n",
+            "        if hdr is None:\n",
+            "            raise ValueError(\"Invalid message header\")\n",
+            "        key = (hdr.module_key, hdr.message_key)\n",
+            "        model_type = _MESSAGE_REGISTRY.get(key)\n",
+            "        if model_type is None:\n",
+            "            raise ValueError(\n",
+            "                f\"Unknown message: module=0x{hdr.module_key:04X} \"\n",
+            "                f\"key=0x{hdr.message_key:04X}\"\n",
+            "            )\n",
+            "        _, fields = deserialize_message(data, model_type)\n",
+            "        return Message(inner=fields, module_key=hdr.module_key, message_key=hdr.message_key)\n",
+        ));
+        out.push_str(concat!(
+            "\n    def request_packet(self) -> bytes:\n",
+            "        return serialize_packet([empty_message(self.module_key, self.message_key)])\n",
+        ));
+        out.push_str(concat!(
+            "\n    @staticmethod\n",
+            "    def request_packet_for(msg_cls: type) -> bytes:\n",
+            "        return serialize_packet([empty_message(msg_cls.module_key, msg_cls.message_key)])\n",
+        ));
+        out.push_str(concat!(
+            "\n    @staticmethod\n",
+            "    def extract_packets(buf: bytearray) -> list[\"Message\"]:\n",
+            "        results: list[\"Message\"] = []\n",
+            "        while True:\n",
+            "            idx = buf.find(PACKET_MAGIC)\n",
+            "            if idx < 0:\n",
+            "                break\n",
+            "            if idx > 0:\n",
+            "                buf[:idx] = b\"\"\n",
+            "            if len(buf) < 8:\n",
+            "                break\n",
+            "            length_words = struct.unpack_from(\"<H\", buf, 4)[0]\n",
+            "            packet_len = length_words * 4\n",
+            "            if packet_len < 8 or len(buf) < packet_len:\n",
+            "                break\n",
+            "            try:\n",
+            "                _pkt_hdr, raw_messages = deserialize_packet(bytes(buf[:packet_len]))\n",
+            "                for raw_msg in raw_messages:\n",
+            "                    try:\n",
+            "                        results.append(Message.from_raw(raw_msg))\n",
+            "                    except ValueError:\n",
+            "                        pass\n",
+            "                buf[:packet_len] = b\"\"\n",
+            "            except ValueError:\n",
+            "                buf[:4] = b\"\"\n",
+            "        return results\n",
+        ));
+        out.push_str("\n    def __str__(self) -> str:\n");
+        out.push_str(&display_block);
+        out.push_str(concat!(
+            "\n        return (\n",
+            "            f\"Unknown(0x{self.module_key:04X}, 0x{self.message_key:04X})\"\n",
+            "        )\n",
+        ));
+        out
     }
 }
 
-fn writer_for(ty: &Type) -> Tokens {
+fn wire_type_name(ty: &Type) -> Option<&'static str> {
     match ty {
-        Type::UnsignedShort => quote!(write_u16),
-        Type::Short => quote!(write_i16),
-        Type::UnsignedLong => quote!(write_u32),
-        Type::Long => quote!(write_i32),
-        Type::UnsignedLongLong => quote!(write_u64),
-        Type::LongLong => quote!(write_i64),
-        Type::Octet => quote!(write_u8),
-        Type::Boolean => quote!(write_bool),
-        Type::Char => quote!(write_char),
-        Type::Float => quote!(write_f32),
-        Type::Double => quote!(write_f64),
-        _ => quote!(write_u32),
+        Type::Octet => Some("UInt8"),
+        Type::Short => Some("Int16"),
+        Type::UnsignedShort => Some("UInt16"),
+        Type::Long => Some("Int32"),
+        Type::UnsignedLong => Some("UInt32"),
+        Type::LongLong => Some("Int64"),
+        Type::UnsignedLongLong => Some("UInt64"),
+        Type::Float => Some("Float32"),
+        _ => None,
     }
 }
 
-fn reader_for(ty: &Type) -> Tokens {
-    match ty {
-        Type::UnsignedShort => quote!(read_u16),
-        Type::Short => quote!(read_i16),
-        Type::UnsignedLong => quote!(read_u32),
-        Type::Long => quote!(read_i32),
-        Type::UnsignedLongLong => quote!(read_u64),
-        Type::LongLong => quote!(read_i64),
-        Type::Octet => quote!(read_u8),
-        Type::Boolean => quote!(read_bool),
-        Type::Char => quote!(read_char),
-        Type::Float => quote!(read_f32),
-        Type::Double => quote!(read_f64),
-        _ => quote!(read_u32),
+fn skip_wrapper_modules(definitions: &[Definition]) -> (&[Definition], Vec<String>) {
+    let mut current = definitions;
+    let mut scope = Vec::new();
+
+    loop {
+        let mut module_count = 0;
+        let mut single_module_defs: Option<&[Definition]> = None;
+        let mut single_module_name: Option<String> = None;
+        let mut has_non_modules = false;
+
+        for d in current {
+            match d {
+                Definition::ModuleDef(m) => {
+                    module_count += 1;
+                    if module_count == 1 {
+                        single_module_defs = Some(&m.node.definitions);
+                        single_module_name = Some(m.node.name.clone());
+                    }
+                }
+                Definition::ImportDef(_) => {}
+                _ => {
+                    has_non_modules = true;
+                }
+            }
+        }
+
+        if has_non_modules || module_count != 1 {
+            break;
+        }
+
+        scope.push(single_module_name.unwrap());
+        current = single_module_defs.unwrap();
+    }
+
+    (current, scope)
+}
+
+fn scope_to_file_path(scope: &[String]) -> String {
+    let parts: Vec<String> = scope.iter().map(|s| to_snake_case(s)).collect();
+    format!("python/{}.py", parts.join("/"))
+}
+
+fn scope_to_python_module(scope: &[String]) -> String {
+    scope
+        .iter()
+        .map(|s| to_snake_case(s))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    let mut prev_was_lower = false;
+    for ch in name.chars() {
+        if ch.is_uppercase() {
+            if prev_was_lower {
+                result.push('_');
+            }
+            result.extend(ch.to_lowercase());
+            prev_was_lower = false;
+        } else {
+            prev_was_lower = ch.is_lowercase();
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn local_name(inner_scope: &[String], name: &str) -> String {
+    if inner_scope.is_empty() {
+        name.to_string()
+    } else {
+        let mut parts = inner_scope.to_vec();
+        parts.push(name.to_string());
+        parts.join("_")
     }
 }
 
@@ -641,16 +1043,6 @@ fn annotation_u16(annotations: &[Annotation], name: &str) -> Option<u16> {
     })
 }
 
-fn class_name(scope: &[String], name: &str) -> String {
-    let mut parts = scope.to_vec();
-    parts.push(name.to_string());
-    parts.join("_")
-}
-
-fn class_name_path(path: &[String]) -> String {
-    path.join("_")
-}
-
 fn scoped_name(scope: &[String], name: &str) -> String {
     if scope.is_empty() {
         name.to_string()
@@ -672,44 +1064,6 @@ fn quoted_string(value: &str) -> String {
         }
     }
     format!("\"{escaped}\"")
-}
-
-fn python_type_hint(ty: &Type, scope: &[String], registry: &TypeRegistry) -> Tokens {
-    match registry.resolve_type(ty, scope) {
-        Type::Boolean => quote!(bool),
-        Type::Char => quote!(str),
-        Type::Octet
-        | Type::Short
-        | Type::UnsignedShort
-        | Type::Long
-        | Type::UnsignedLong
-        | Type::LongLong
-        | Type::UnsignedLongLong => quote!(int),
-        Type::Float | Type::Double => quote!(float),
-        Type::String { .. } => quote!(str),
-        Type::Sequence { element_type, .. } => {
-            let inner = python_type_hint(&element_type, scope, registry);
-            quote!(List[$inner])
-        }
-        Type::Array {
-            element_type,
-            dimensions,
-        } => {
-            let mut elem = *element_type;
-            for _ in dimensions {
-                elem = Type::Sequence {
-                    element_type: Box::new(elem),
-                    size: None,
-                };
-            }
-            python_type_hint(&elem, scope, registry)
-        }
-        Type::ScopedName(path) => {
-            let ident = class_name_path(&path);
-            quote!( $ident )
-        }
-        Type::WString | Type::WChar | Type::LongDouble => quote!(object),
-    }
 }
 
 fn const_literal(value: &ConstValue) -> Tokens {
