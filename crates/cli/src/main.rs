@@ -50,7 +50,7 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
         parse_file(&options.input)?
     };
 
-    println!(
+    eprintln!(
         "Parsed {} top-level definitions from {}",
         definitions.len(),
         options.input.display()
@@ -58,7 +58,7 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
 
     if options.emit_idl {
         let generated = generate_idl(&definitions);
-        println!("\n// normalized IDL output\n{generated}");
+        print!("{generated}");
     }
 
     let output_root = options
