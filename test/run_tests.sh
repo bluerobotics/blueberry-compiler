@@ -15,4 +15,5 @@ echo "Running C++ validation"
 gcc -std=c++20 "${REPO_ROOT}/test/cpp/messages.hpp"
 
 echo "Running Python validation"
-python "${REPO_ROOT}/test/python/messages.py"
+cp "${REPO_ROOT}/examples/python/pyproject.toml" "${REPO_ROOT}/test/python/pyproject.toml"
+uv run --directory "${REPO_ROOT}/test/python/" "message.py"
