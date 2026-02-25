@@ -137,6 +137,98 @@ impl TypeRegistry {
         self.enums.get(path)
     }
 
+    /// Wire-format alignment for a resolved type, matching blueberry-serde's
+    /// `write_padding` / `_read_padding` rules:
+    ///   size >= 8 → align 4, size <= 1 → align 1, otherwise align = size.
+    pub fn alignment_of(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Boolean | Type::Char | Type::Octet => 1,
+            Type::Short | Type::UnsignedShort => 2,
+            Type::Long | Type::UnsignedLong | Type::Float => 4,
+            Type::LongLong | Type::UnsignedLongLong | Type::Double => 4,
+            Type::String { .. } | Type::Sequence { .. } => 2,
+            Type::Array { .. } => 2,
+            Type::ScopedName(path) => {
+                if let Some(base) = self.enum_base(path) {
+                    self.alignment_of(base)
+                } else {
+                    4
+                }
+            }
+            _ => 4,
+        }
+    }
+
+    /// Inline wire size for a type (bytes consumed in the fixed body).
+    fn wire_size_of(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Boolean | Type::Char | Type::Octet => 1,
+            Type::Short | Type::UnsignedShort => 2,
+            Type::Long | Type::UnsignedLong | Type::Float => 4,
+            Type::LongLong | Type::UnsignedLongLong | Type::Double => 8,
+            Type::String { .. } => 2,
+            Type::Sequence { .. } | Type::Array { .. } => 4,
+            Type::ScopedName(path) => {
+                if let Some(base) = self.enum_base(path) {
+                    self.wire_size_of(base)
+                } else {
+                    4
+                }
+            }
+            _ => 4,
+        }
+    }
+
+    /// Reorder members to eliminate alignment padding while staying as close
+    /// to the original IDL order as possible.
+    ///
+    /// At each position, if the next IDL-order field fits without padding it is
+    /// placed immediately.  Otherwise the algorithm looks ahead for the nearest
+    /// field that *does* fit and pulls it forward.
+    pub fn sort_members_by_alignment(&self, members: &mut [ResolvedMember]) {
+        let n = members.len();
+        if n <= 1 {
+            return;
+        }
+        let mut placed = vec![false; n];
+        let mut result: Vec<ResolvedMember> = Vec::with_capacity(n);
+        let mut pos: usize = 0;
+
+        while result.len() < n {
+            let mut chosen = None;
+
+            // Try the next unplaced field in IDL order; if it fits, use it.
+            // Otherwise scan ahead for the nearest field that fits.
+            for i in 0..n {
+                if placed[i] {
+                    continue;
+                }
+                let align = self.alignment_of(&members[i].ty);
+                if align <= 1 || pos.is_multiple_of(align) {
+                    chosen = Some(i);
+                    break;
+                }
+                if chosen.is_none() {
+                    chosen = Some(i);
+                }
+            }
+
+            let i = chosen.unwrap();
+            placed[i] = true;
+            let align = self.alignment_of(&members[i].ty);
+            if align > 1 {
+                let rem = pos % align;
+                if rem != 0 {
+                    pos += align - rem;
+                }
+            }
+            pos += self.wire_size_of(&members[i].ty);
+            result.push(members[i].clone());
+        }
+
+        members.clone_from_slice(&result);
+    }
+
     pub fn resolve_typedef(&self, name: &[String], scope: &[String]) -> Option<Vec<String>> {
         self.resolve_path(name, scope, self.typedefs.keys())
     }
