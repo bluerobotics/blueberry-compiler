@@ -743,7 +743,16 @@ fn parses_message_definitions() {
     let defs = parse_fixture("message_basic.idl");
     assert_eq!(defs.len(), 1);
 
-    let message = match &defs[0] {
+    let module = match &defs[0] {
+        Definition::ModuleDef(def) => def,
+        other => panic!("expected module definition, found {:?}", other),
+    };
+    assert_eq!(module.node.name, "Blueberry");
+    assert_eq!(module.annotations.len(), 1);
+    assert_eq!(module.annotations[0].name, scoped(&["module_key"]));
+
+    assert_eq!(module.node.definitions.len(), 1);
+    let message = match &module.node.definitions[0] {
         Definition::MessageDef(def) => def,
         other => panic!("expected message definition, found {:?}", other),
     };
