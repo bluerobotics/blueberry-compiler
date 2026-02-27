@@ -1,6 +1,9 @@
-@topic(value = "blueberry/devices/status")
-@message_key(value = 0x47)
-message StatusUpdate {
-    long id;
-    boolean active;
+@module_key(0x0666)
+module Blueberry {
+    @topic(value = "blueberry/devices/status")
+    @message_key(value = 0x47)
+    message StatusUpdate {
+        long id;
+        boolean active;
+    };
 };
