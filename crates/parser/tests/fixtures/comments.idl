@@ -59,3 +59,35 @@ module Outer {
 struct Uncommented {
     long id;
 };
+
+enum InlineEnumComments : uint8 {
+    ALPHA = 0,  //first inline
+    BETA  = 1,  //second inline
+    GAMMA = 2,
+
+    // preceding on DELTA
+    DELTA   = 3,  //inline on DELTA
+    EPSILON = 4,  //the last with inline
+};
+
+module ::Family::Devices {
+    enum FlashProgramState : uint8 {
+        DO_NOTHING_REQUEST     =  0,  //controller doesn't want the peripheral to do anything in particular at this moment
+
+        UPLOAD_REQUEST         =  1,  //controller is sending upload data to the peripheral
+        RUN_REQUEST            =  2,  //controller wants peripheral to run the image in flash.
+        OVERWRITE_REQUEST      =  3,  //controller wants peripheral to overwrite its main code with the new flash image.
+        CLEAR_REQUEST          =  4, //controller wants peripheral to clear its upper flash memory in preparation for an upload.
+        STOP_REQUEST           =  5,  //controller wants peripheral to stop running upper flash
+
+        IMAGE_GOOD_RESPONSE    =  6,  //peripheral has a good image in flash
+        IMAGE_BAD_RESPONSE     =  7,  //peripheral has data in flash that does not check out as a correct image
+        IMAGE_CLEAR_RESPONSE   =  8,  //peripheral indicates that its upper flash memory is clear and ready for upload
+        UPLOADING_RESPONSE     =  9,  //peripheral is receiving data.
+        UPLOAD_BAD_RESPONSE    = 10,  //peripheral detected an error in the data
+        WILL_RUN_RESPONSE      = 11,  //peripheral responds with this for 5 packet cycles, then reboots
+        RUNNING_RESPONSE       = 12,  //peripheral is running upper flash image
+        OVERWRITING_RESPONSE   = 13,  //peripheral response with this for 5 packet cyles, then reboots.
+        CLEARING_RESPONSE      = 14,  //peripheral says that it's busy clearing
+    };
+};
