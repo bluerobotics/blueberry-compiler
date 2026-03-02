@@ -5,7 +5,7 @@ use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
-use blueberry_parser::{Annotation, Commented, Definition, ModuleDef, ParseError, parse_idl};
+use blueberry_parser::{Annotation, Definition, ParseError, parse_idl};
 use clap::{
     Parser,
     builder::styling::{AnsiColor, Styles},
@@ -244,25 +244,7 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
     let mut all_defs: Vec<Definition> = Vec::new();
     for path in &idl_files {
         let defs = parse_file(path)?;
-
-        let rel = path
-            .strip_prefix(root)
-            .expect("collected path should be under root");
-        let segments: Vec<String> = rel
-            .parent()
-            .into_iter()
-            .flat_map(|p| p.components())
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .chain(std::iter::once(
-                rel.file_stem()
-                    .expect("idl file should have a stem")
-                    .to_string_lossy()
-                    .into_owned(),
-            ))
-            .collect();
-
-        let wrapped = wrap_in_modules(&segments, defs);
-        merge_definitions(&mut all_defs, wrapped);
+        merge_definitions(&mut all_defs, defs);
     }
 
     propagate_module_key_annotations(&mut all_defs);
@@ -340,36 +322,6 @@ fn apply_module_key_annotations(
             apply_module_key_annotations(&mut module.node.definitions, keys);
         }
     }
-}
-
-/// Wraps definitions in nested modules matching the given path segments.
-/// For segments `["a", "b"]` and defs `[D1, D2]`, produces
-/// `[ModuleDef("a", [ModuleDef("b", [D1, D2])])]`.
-fn wrap_in_modules(segments: &[String], defs: Vec<Definition>) -> Vec<Definition> {
-    if segments.is_empty() {
-        return defs;
-    }
-
-    let innermost = Definition::ModuleDef(Commented::new(
-        ModuleDef {
-            name: segments.last().unwrap().clone(),
-            definitions: defs,
-        },
-        Vec::new(),
-    ));
-
-    let mut current = vec![innermost];
-    for name in segments[..segments.len() - 1].iter().rev() {
-        current = vec![Definition::ModuleDef(Commented::new(
-            ModuleDef {
-                name: name.clone(),
-                definitions: current,
-            },
-            Vec::new(),
-        ))];
-    }
-
-    current
 }
 
 /// Merges `incoming` definitions into `target`, combining `ModuleDef` nodes
