@@ -1,11 +1,13 @@
-use ariadne::{Color, Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind, Source, sources};
 use blueberry_codegen_core::{CodegenError, GeneratedFile};
 use blueberry_generator_c as generator_c;
 use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
-use blueberry_parser::{Annotation, Definition, ParseError, parse_idl};
+use blueberry_parser::{
+    Annotation, AnnotationParam, ConstValue, Definition, ParseError, parse_idl,
+};
 use clap::{
     Parser,
     builder::styling::{AnsiColor, Styles},
@@ -48,7 +50,13 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
     let definitions = if is_dir {
         load_definitions_from_dir(&options.input)?
     } else {
-        parse_file(&options.input)?
+        let source = fs::read_to_string(&options.input)?;
+        let defs = parse_idl(&source).map_err(|err| {
+            report_parse_error(&options.input, &source, &err);
+            Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
+        })?;
+        validate_keys(&[(&options.input, source.as_str(), &defs)])?;
+        defs
     };
 
     eprintln!(
@@ -131,14 +139,6 @@ struct CliOptions {
     /// Directory where generated files will be written. Defaults to the current directory.
     #[arg(long, value_name = "OUTPUT_DIR")]
     output_dir: Option<PathBuf>,
-}
-
-fn parse_file(path: &Path) -> Result<Vec<Definition>, Box<dyn Error>> {
-    let contents = fs::read_to_string(path)?;
-    parse_idl(&contents).map_err(|err| {
-        report_parse_error(path, &contents, &err);
-        Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
-    })
 }
 
 fn report_parse_error(path: &Path, source: &str, error: &ParseError) {
@@ -241,9 +241,24 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
         return Err(format!("no .idl files found in {}", root.display()).into());
     }
 
-    let mut all_defs: Vec<Definition> = Vec::new();
+    let mut files: Vec<(PathBuf, String, Vec<Definition>)> = Vec::new();
     for path in &idl_files {
-        let defs = parse_file(path)?;
+        let source = fs::read_to_string(path)?;
+        let defs = parse_idl(&source).map_err(|err| {
+            report_parse_error(path, &source, &err);
+            Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
+        })?;
+        files.push((path.clone(), source, defs));
+    }
+
+    let refs: Vec<(&Path, &str, &[Definition])> = files
+        .iter()
+        .map(|(p, s, d)| (p.as_path(), s.as_str(), d.as_slice()))
+        .collect();
+    validate_keys(&refs)?;
+
+    let mut all_defs: Vec<Definition> = Vec::new();
+    for (_, _, defs) in files {
         merge_definitions(&mut all_defs, defs);
     }
 
@@ -322,6 +337,250 @@ fn apply_module_key_annotations(
             apply_module_key_annotations(&mut module.node.definitions, keys);
         }
     }
+}
+
+fn is_message_key_annotation(ann: &Annotation) -> bool {
+    ann.name
+        .last()
+        .map(|s| s.eq_ignore_ascii_case("message_key"))
+        .unwrap_or(false)
+}
+
+fn annotation_integer_value(ann: &Annotation) -> Option<i128> {
+    let param = ann.params.first()?;
+    let value = match param {
+        AnnotationParam::Named { value, .. } => value,
+        AnnotationParam::Positional(v) => v,
+    };
+    match value {
+        ConstValue::Integer(lit) => Some(lit.value),
+        _ => None,
+    }
+}
+
+fn find_nth_pattern(source: &str, pattern: &str, n: usize) -> (usize, usize) {
+    let mut count = 0;
+    let mut search_from = 0;
+    while let Some(rel) = source[search_from..].find(pattern) {
+        let start = search_from + rel;
+        if count == n {
+            let end = source[start..]
+                .find(')')
+                .map(|p| start + p + 1)
+                .unwrap_or(start + pattern.len());
+            return (start, end);
+        }
+        count += 1;
+        search_from = start + pattern.len();
+    }
+    (0, pattern.len().min(source.len()))
+}
+
+struct KeyEntry {
+    value: i128,
+    label: String,
+    file_idx: usize,
+    occurrence: usize,
+}
+
+fn collect_keys(
+    defs: &[Definition],
+    module_path: &mut Vec<String>,
+    file_idx: usize,
+    mk_occurrence: &mut usize,
+    msg_occurrence: &mut usize,
+    module_keys: &mut Vec<(Vec<String>, KeyEntry)>,
+    message_keys: &mut Vec<(String, KeyEntry)>,
+) {
+    for def in defs {
+        match def {
+            Definition::ModuleDef(module) => {
+                module_path.push(module.node.name.clone());
+                if let Some(ann) = module
+                    .annotations
+                    .iter()
+                    .find(|a| is_module_key_annotation(a))
+                    && let Some(value) = annotation_integer_value(ann)
+                {
+                    module_keys.push((
+                        module_path.clone(),
+                        KeyEntry {
+                            value,
+                            label: module.node.name.clone(),
+                            file_idx,
+                            occurrence: *mk_occurrence,
+                        },
+                    ));
+                    *mk_occurrence += 1;
+                }
+                collect_keys(
+                    &module.node.definitions,
+                    module_path,
+                    file_idx,
+                    mk_occurrence,
+                    msg_occurrence,
+                    module_keys,
+                    message_keys,
+                );
+                module_path.pop();
+            }
+            Definition::MessageDef(msg) => {
+                if let Some(ann) = msg
+                    .annotations
+                    .iter()
+                    .find(|a| is_message_key_annotation(a))
+                    && let Some(value) = annotation_integer_value(ann)
+                {
+                    let root = module_path.first().cloned().unwrap_or_default();
+                    message_keys.push((
+                        root,
+                        KeyEntry {
+                            value,
+                            label: msg.node.name.clone(),
+                            file_idx,
+                            occurrence: *msg_occurrence,
+                        },
+                    ));
+                    *msg_occurrence += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_keys(files: &[(&Path, &str, &[Definition])]) -> Result<(), Box<dyn Error>> {
+    let mut module_keys: Vec<(Vec<String>, KeyEntry)> = Vec::new();
+    let mut message_keys: Vec<(String, KeyEntry)> = Vec::new();
+
+    for (file_idx, (_, _, defs)) in files.iter().enumerate() {
+        let mut path = Vec::new();
+        let mut mk_occ = 0;
+        let mut msg_occ = 0;
+        collect_keys(
+            defs,
+            &mut path,
+            file_idx,
+            &mut mk_occ,
+            &mut msg_occ,
+            &mut module_keys,
+            &mut message_keys,
+        );
+    }
+
+    let mut had_errors = false;
+
+    let mut mk_map: HashMap<Vec<String>, usize> = HashMap::new();
+    for (idx, (path, entry)) in module_keys.iter().enumerate() {
+        if let Some(&existing_idx) = mk_map.get(path) {
+            let existing = &module_keys[existing_idx].1;
+            if existing.value != entry.value {
+                report_conflicting_module_key(path, existing, entry, files);
+                had_errors = true;
+            }
+        } else {
+            mk_map.insert(path.clone(), idx);
+        }
+    }
+
+    let mut msg_map: HashMap<(String, i128), usize> = HashMap::new();
+    for (idx, (root, entry)) in message_keys.iter().enumerate() {
+        let key = (root.clone(), entry.value);
+        if let Some(&existing_idx) = msg_map.get(&key) {
+            let existing = &message_keys[existing_idx].1;
+            if existing.label != entry.label {
+                report_duplicate_message_key(root, existing, entry, files);
+                had_errors = true;
+            }
+        } else {
+            msg_map.insert(key, idx);
+        }
+    }
+
+    if had_errors {
+        Err(Box::new(DiagnosticAlreadyPrinted))
+    } else {
+        Ok(())
+    }
+}
+
+fn report_conflicting_module_key(
+    module_path: &[String],
+    first: &KeyEntry,
+    second: &KeyEntry,
+    files: &[(&Path, &str, &[Definition])],
+) {
+    let (first_path, first_source, _) = files[first.file_idx];
+    let (second_path, second_source, _) = files[second.file_idx];
+
+    let first_name = first_path.display().to_string();
+    let second_name = second_path.display().to_string();
+
+    let (start1, end1) = find_nth_pattern(first_source, "@module_key", first.occurrence);
+    let (start2, end2) = find_nth_pattern(second_source, "@module_key", second.occurrence);
+
+    Report::build(ReportKind::Error, second_name.clone(), start2)
+        .with_message(format!(
+            "conflicting @module_key values for module `{}`",
+            module_path.join("::")
+        ))
+        .with_label(
+            Label::new((second_name.clone(), start2..end2))
+                .with_message(format!("defined as @module_key(0x{:X})", second.value))
+                .with_color(Color::Red),
+        )
+        .with_label(
+            Label::new((first_name.clone(), start1..end1))
+                .with_message(format!(
+                    "previously defined as @module_key(0x{:X})",
+                    first.value
+                ))
+                .with_color(Color::Yellow),
+        )
+        .finish()
+        .eprint(sources(vec![
+            (first_name, first_source),
+            (second_name, second_source),
+        ]))
+        .unwrap();
+}
+
+fn report_duplicate_message_key(
+    root_module: &str,
+    first: &KeyEntry,
+    second: &KeyEntry,
+    files: &[(&Path, &str, &[Definition])],
+) {
+    let (first_path, first_source, _) = files[first.file_idx];
+    let (second_path, second_source, _) = files[second.file_idx];
+
+    let first_name = first_path.display().to_string();
+    let second_name = second_path.display().to_string();
+
+    let (start1, end1) = find_nth_pattern(first_source, "@message_key", first.occurrence);
+    let (start2, end2) = find_nth_pattern(second_source, "@message_key", second.occurrence);
+
+    Report::build(ReportKind::Error, second_name.clone(), start2)
+        .with_message(format!(
+            "duplicate @message_key(0x{:X}) in module `{}`",
+            second.value, root_module
+        ))
+        .with_label(
+            Label::new((second_name.clone(), start2..end2))
+                .with_message(format!("used by message `{}`", second.label))
+                .with_color(Color::Red),
+        )
+        .with_label(
+            Label::new((first_name.clone(), start1..end1))
+                .with_message(format!("first used by message `{}`", first.label))
+                .with_color(Color::Yellow),
+        )
+        .finish()
+        .eprint(sources(vec![
+            (first_name, first_source),
+            (second_name, second_source),
+        ]))
+        .unwrap();
 }
 
 /// Merges `incoming` definitions into `target`, combining `ModuleDef` nodes
