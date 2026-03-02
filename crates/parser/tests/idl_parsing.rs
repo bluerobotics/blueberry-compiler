@@ -1005,7 +1005,7 @@ fn parses_scoped_module_names() {
 #[test]
 fn parses_comments_on_definitions() {
     let defs = parse_fixture("comments.idl");
-    assert_eq!(defs.len(), 8);
+    assert_eq!(defs.len(), 10);
 
     fn expect_struct(def: &Definition) -> &Commented<StructDef> {
         match def {
@@ -1115,4 +1115,117 @@ fn uncommented_definitions_have_empty_comments() {
         uncommented.comments.is_empty(),
         "uncommented struct should have no comments"
     );
+}
+
+#[test]
+fn inline_comments_attach_to_enum_members_on_same_line() {
+    let defs = parse_fixture("comments.idl");
+
+    let enum_def = defs
+        .iter()
+        .find_map(|def| match def {
+            Definition::EnumDef(e) if e.node.name == "InlineEnumComments" => Some(&e.node),
+            _ => None,
+        })
+        .expect("InlineEnumComments enum missing");
+
+    assert_eq!(enum_def.enumerators.len(), 5);
+
+    assert_eq!(enum_def.enumerators[0].name, "ALPHA");
+    assert_eq!(
+        enum_def.enumerators[0].comments,
+        vec!["first inline"],
+        "inline comment should attach to ALPHA, not BETA"
+    );
+
+    assert_eq!(enum_def.enumerators[1].name, "BETA");
+    assert_eq!(
+        enum_def.enumerators[1].comments,
+        vec!["second inline"],
+        "inline comment should attach to BETA, not GAMMA"
+    );
+
+    assert_eq!(enum_def.enumerators[2].name, "GAMMA");
+    assert!(
+        enum_def.enumerators[2].comments.is_empty(),
+        "GAMMA has no comment"
+    );
+
+    assert_eq!(enum_def.enumerators[3].name, "DELTA");
+    assert_eq!(
+        enum_def.enumerators[3].comments,
+        vec!["preceding on DELTA", "inline on DELTA"],
+        "preceding and inline comments should both attach to DELTA"
+    );
+
+    assert_eq!(enum_def.enumerators[4].name, "EPSILON");
+    assert_eq!(
+        enum_def.enumerators[4].comments,
+        vec!["the last with inline"],
+        "inline comment on last member with trailing comma should attach to EPSILON"
+    );
+}
+
+#[test]
+fn parses_flash_program_state_with_inline_comments() {
+    let defs = parse_fixture("comments.idl");
+
+    // FlashProgramState is inside module ::Family::Devices (def index 9)
+    let family_module = match &defs[9] {
+        Definition::ModuleDef(m) => &m.node,
+        other => panic!("expected Family module, found {:?}", other),
+    };
+    assert_eq!(family_module.name, "Family");
+
+    let devices_module = match &family_module.definitions[0] {
+        Definition::ModuleDef(m) => &m.node,
+        other => panic!("expected Devices module, found {:?}", other),
+    };
+    assert_eq!(devices_module.name, "Devices");
+
+    let enum_def = match &devices_module.definitions[0] {
+        Definition::EnumDef(e) => &e.node,
+        other => panic!("expected FlashProgramState enum, found {:?}", other),
+    };
+    assert_eq!(enum_def.name, "FlashProgramState");
+    assert!(matches!(enum_def.base_type, Some(Type::Octet)));
+    assert_eq!(enum_def.enumerators.len(), 15);
+
+    #[rustfmt::skip]
+    let expected: &[(&str, i128, &str)] = &[
+        ("DO_NOTHING_REQUEST", 0, "controller doesn't want the peripheral to do anything in particular at this moment"),
+        ("UPLOAD_REQUEST", 1, "controller is sending upload data to the peripheral"),
+        ("RUN_REQUEST", 2, "controller wants peripheral to run the image in flash."),
+        ("OVERWRITE_REQUEST", 3, "controller wants peripheral to overwrite its main code with the new flash image."),
+        ("CLEAR_REQUEST", 4, "controller wants peripheral to clear its upper flash memory in preparation for an upload."),
+        ("STOP_REQUEST", 5, "controller wants peripheral to stop running upper flash"),
+        ("IMAGE_GOOD_RESPONSE", 6, "peripheral has a good image in flash"),
+        ("IMAGE_BAD_RESPONSE", 7, "peripheral has data in flash that does not check out as a correct image"),
+        ("IMAGE_CLEAR_RESPONSE", 8, "peripheral indicates that its upper flash memory is clear and ready for upload"),
+        ("UPLOADING_RESPONSE", 9, "peripheral is receiving data."),
+        ("UPLOAD_BAD_RESPONSE", 10, "peripheral detected an error in the data"),
+        ("WILL_RUN_RESPONSE", 11, "peripheral responds with this for 5 packet cycles, then reboots"),
+        ("RUNNING_RESPONSE", 12, "peripheral is running upper flash image"),
+        ("OVERWRITING_RESPONSE", 13, "peripheral response with this for 5 packet cyles, then reboots."),
+        ("CLEARING_RESPONSE", 14, "peripheral says that it's busy clearing"),
+    ];
+
+    for (member, (name, value, comment)) in enum_def.enumerators.iter().zip(expected) {
+        assert_eq!(&member.name, name, "enum member name mismatch");
+        match &member.value {
+            Some(ConstValue::Integer(lit)) => {
+                assert_eq!(lit.value, *value, "{} should have value {}", name, value)
+            }
+            other => panic!(
+                "{} expected integer value {}, found {:?}",
+                name, value, other
+            ),
+        }
+        assert_eq!(
+            member.comments,
+            vec![*comment],
+            "inline comment on {} should attach to that member, not the next one",
+            name
+        );
+    }
 }
