@@ -187,10 +187,18 @@ ImportedScope: ImportScope = {
 };
 
 EnumDef: EnumDef = {
-    "enum" <name:Identifier> <base:EnumBaseType?> "{" <enumerators:EnumMemberList> "}" ";" => EnumDef {
-        name,
-        base_type: base,
-        enumerators,
+    "enum" <name:Identifier> <base:EnumBaseType?> "{" <result:EnumMemberList> "}" ";" => {
+        let (unsplit, mut enumerators) = result;
+        if let Some(first) = enumerators.first_mut() {
+            let mut preceding: Vec<String> = unsplit.into_iter().map(|(_, s)| s).collect();
+            preceding.append(&mut first.comments);
+            first.comments = preceding;
+        }
+        EnumDef {
+            name,
+            base_type: base,
+            enumerators,
+        }
     }
 };
 
@@ -198,31 +206,54 @@ EnumBaseType: Type = {
     ":" <type_:Type> => type_,
 };
 
-EnumMemberList: Vec<EnumMember> = {
-    => vec![],
-    <entry:EnumMember> <rest:EnumMemberTail> => {
-        let mut list = vec![entry];
-        list.extend(rest);
-        list
-    }
-};
+// Returns (unsplit_comments, members) — mirrors MemberList for line-based
+// trailing-comment reassignment.
+EnumMemberList: (Vec<(usize, String)>, Vec<EnumMember>) = {
+    <trailing:CommentList> => (trailing, vec![]),
 
-EnumMemberTail: Vec<EnumMember> = {
-    => vec![],
-    <_sep:EnumSeparator> <rest:EnumMemberList> => rest,
+    <comments:CommentList> <name:Identifier> <value:EnumValue?> <_sep:EnumSeparator> <end:@R> <rest:EnumMemberList> => {
+        let (unsplit, mut rest_members) = rest;
+
+        let line_end = source[end..].find('\n').map(|i| end + i).unwrap_or(source.len());
+
+        let split_idx = unsplit.iter().position(|(pos, _)| *pos > line_end).unwrap_or(unsplit.len());
+        let trailing: Vec<String> = unsplit[..split_idx].iter().map(|(_, s)| s.clone()).collect();
+        let preceding: Vec<String> = unsplit[split_idx..].iter().map(|(_, s)| s.clone()).collect();
+
+        if !preceding.is_empty()
+            && let Some(first) = rest_members.first_mut() {
+                let mut new_comments = preceding;
+                new_comments.append(&mut first.comments);
+                first.comments = new_comments;
+            }
+
+        let member = EnumMember {
+            name,
+            value,
+            comments: trailing,
+        };
+        rest_members.insert(0, member);
+
+        (comments, rest_members)
+    },
+
+    <comments:CommentList> <name:Identifier> <value:EnumValue?> <end:@R> <trailing:CommentList> => {
+        let line_end = source[end..].find('\n').map(|i| end + i).unwrap_or(source.len());
+        let split_idx = trailing.iter().position(|(pos, _)| *pos > line_end).unwrap_or(trailing.len());
+        let inline: Vec<String> = trailing[..split_idx].iter().map(|(_, s)| s.clone()).collect();
+
+        let member = EnumMember {
+            name,
+            value,
+            comments: inline,
+        };
+        (comments, vec![member])
+    },
 };
 
 EnumSeparator: () = {
     "," => (),
     ";" => (),
-};
-
-EnumMember: EnumMember = {
-    <comments:CommentList> <name:Identifier> <value:EnumValue?> => EnumMember {
-        name,
-        value,
-        comments: comments.into_iter().map(|(_, s)| s).collect(),
-    }
 };
 
 EnumValue: ConstValue = {
