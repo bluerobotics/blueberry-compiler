@@ -282,6 +282,9 @@ fn collect_idl_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(),
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "test") {
+                continue;
+            }
             collect_idl_files_recursive(&path, out)?;
         } else if path.extension().is_some_and(|ext| ext == "idl") {
             out.push(path);
