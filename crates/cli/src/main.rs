@@ -6,13 +6,13 @@ use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
 use blueberry_parser::{
-    Annotation, AnnotationParam, ConstValue, Definition, ParseError, parse_idl,
+    Annotation, AnnotationParam, ConstValue, Definition, ImportScope, ParseError, parse_idl,
 };
 use clap::{
     Parser,
     builder::styling::{AnsiColor, Styles},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Blue.on_default().bold())
@@ -55,7 +55,12 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
             report_parse_error(&options.input, &source, &err);
             Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
         })?;
-        validate_keys(&[(&options.input, source.as_str(), &defs)])?;
+        let file_ref: Vec<(&Path, &str, &[Definition])> =
+            vec![(&options.input, source.as_str(), &defs)];
+        validate_keys(&file_ref)?;
+        let mut module_paths = HashSet::new();
+        collect_module_paths(&defs, &mut vec![], &mut module_paths);
+        validate_imports(&file_ref, &module_paths)?;
         defs
     };
 
@@ -256,6 +261,12 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
         .map(|(p, s, d)| (p.as_path(), s.as_str(), d.as_slice()))
         .collect();
     validate_keys(&refs)?;
+
+    let mut module_paths = HashSet::new();
+    for (_, _, defs) in files.iter() {
+        collect_module_paths(defs, &mut vec![], &mut module_paths);
+    }
+    validate_imports(&refs, &module_paths)?;
 
     let mut all_defs: Vec<Definition> = Vec::new();
     for (_, _, defs) in files {
@@ -580,6 +591,94 @@ fn report_duplicate_message_key(
             (first_name, first_source),
             (second_name, second_source),
         ]))
+        .unwrap();
+}
+
+fn collect_module_paths(
+    defs: &[Definition],
+    current_path: &mut Vec<String>,
+    paths: &mut HashSet<Vec<String>>,
+) {
+    for def in defs {
+        if let Definition::ModuleDef(module) = def {
+            current_path.push(module.node.name.clone());
+            paths.insert(current_path.clone());
+            collect_module_paths(&module.node.definitions, current_path, paths);
+            current_path.pop();
+        }
+    }
+}
+
+fn validate_imports(
+    files: &[(&Path, &str, &[Definition])],
+    module_paths: &HashSet<Vec<String>>,
+) -> Result<(), Box<dyn Error>> {
+    let mut had_errors = false;
+    for &(path, source, defs) in files {
+        check_imports_recursive(defs, path, source, module_paths, &mut had_errors);
+    }
+
+    if had_errors {
+        Err(Box::new(DiagnosticAlreadyPrinted))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_imports_recursive(
+    defs: &[Definition],
+    file_path: &Path,
+    source: &str,
+    module_paths: &HashSet<Vec<String>>,
+    had_errors: &mut bool,
+) {
+    for def in defs {
+        match def {
+            Definition::ImportDef(import) => {
+                if let ImportScope::Scoped(ref segments) = import.node.scope
+                    && !module_paths.contains(segments)
+                {
+                    report_unresolved_import(segments, file_path, source);
+                    *had_errors = true;
+                }
+            }
+            Definition::ModuleDef(module) => {
+                check_imports_recursive(
+                    &module.node.definitions,
+                    file_path,
+                    source,
+                    module_paths,
+                    had_errors,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn report_unresolved_import(segments: &[String], file_path: &Path, source: &str) {
+    let filename = file_path.display().to_string();
+    let import_text = segments.join("::");
+    let search = format!("import {}", import_text);
+
+    let start = source
+        .find(&search)
+        .or_else(|| source.find(&format!("import ::{}", import_text)))
+        .unwrap_or(0);
+    let end = source[start..]
+        .find(';')
+        .map(|p| start + p + 1)
+        .unwrap_or(start + search.len());
+
+    Report::build(ReportKind::Error, filename.as_str(), start)
+        .with_message(format!("unresolved import `{}`", import_text))
+        .with_label(
+            Label::new((filename.as_str(), start..end))
+                .with_message(format!("no module `{}` exists", import_text))
+                .with_color(Color::Red),
+        )
+        .finish()
+        .eprint((filename.as_str(), Source::from(source)))
         .unwrap();
 }
 
