@@ -6,7 +6,8 @@ use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
 use blueberry_parser::{
-    Annotation, AnnotationParam, ConstValue, Definition, ImportScope, ParseError, parse_idl,
+    Annotation, AnnotationParam, ConstValue, Definition, ImportScope, IntegerBase, IntegerLiteral,
+    ParseError, parse_idl,
 };
 use clap::{
     Parser,
@@ -51,7 +52,7 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
         load_definitions_from_dir(&options.input)?
     } else {
         let source = fs::read_to_string(&options.input)?;
-        let defs = parse_idl(&source).map_err(|err| {
+        let mut defs = parse_idl(&source).map_err(|err| {
             report_parse_error(&options.input, &source, &err);
             Box::new(DiagnosticAlreadyPrinted) as Box<dyn Error>
         })?;
@@ -61,6 +62,8 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
         let mut module_paths = HashSet::new();
         collect_module_paths(&defs, &mut vec![], &mut module_paths);
         validate_imports(&file_ref, &module_paths)?;
+        warn_missing_message_keys(&file_ref);
+        auto_assign_message_keys(&mut defs);
         defs
     };
 
@@ -267,6 +270,7 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
         collect_module_paths(defs, &mut vec![], &mut module_paths);
     }
     validate_imports(&refs, &module_paths)?;
+    warn_missing_message_keys(&refs);
 
     let mut all_defs: Vec<Definition> = Vec::new();
     for (_, _, defs) in files {
@@ -274,6 +278,7 @@ fn load_definitions_from_dir(root: &Path) -> Result<Vec<Definition>, Box<dyn Err
     }
 
     propagate_module_key_annotations(&mut all_defs);
+    auto_assign_message_keys(&mut all_defs);
 
     Ok(all_defs)
 }
@@ -680,6 +685,163 @@ fn report_unresolved_import(segments: &[String], file_path: &Path, source: &str)
         .finish()
         .eprint((filename.as_str(), Source::from(source)))
         .unwrap();
+}
+
+fn crc16_ccitt(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
+fn message_absolute_path(module_path: &[String], message_name: &str) -> String {
+    let mut path = String::from("::");
+    for seg in module_path {
+        path.push_str(&seg.to_lowercase());
+        path.push_str("::");
+    }
+    path.push_str(&message_name.to_lowercase());
+    path
+}
+
+fn warn_missing_message_keys(files: &[(&Path, &str, &[Definition])]) {
+    for &(path, source, defs) in files {
+        warn_missing_keys_recursive(defs, &mut vec![], path, source);
+    }
+}
+
+fn warn_missing_keys_recursive(
+    defs: &[Definition],
+    module_path: &mut Vec<String>,
+    file_path: &Path,
+    source: &str,
+) {
+    for def in defs {
+        match def {
+            Definition::MessageDef(msg) => {
+                let has_mk = msg.annotations.iter().any(is_message_key_annotation);
+                if !has_mk {
+                    let abs_path = message_absolute_path(module_path, &msg.node.name);
+                    let key = crc16_ccitt(abs_path.as_bytes());
+                    report_missing_message_key(&msg.node.name, &abs_path, key, file_path, source);
+                }
+            }
+            Definition::ModuleDef(module) => {
+                module_path.push(module.node.name.clone());
+                warn_missing_keys_recursive(
+                    &module.node.definitions,
+                    module_path,
+                    file_path,
+                    source,
+                );
+                module_path.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn report_missing_message_key(
+    message_name: &str,
+    abs_path: &str,
+    auto_key: u16,
+    file_path: &Path,
+    source: &str,
+) {
+    let filename = file_path.display().to_string();
+    let search = format!("message {}", message_name);
+    let start = source.find(&search).unwrap_or(0);
+    let end = start + search.len();
+
+    Report::build(ReportKind::Warning, filename.as_str(), start)
+        .with_message(format!("message `{}` has no @message_key", message_name))
+        .with_label(
+            Label::new((filename.as_str(), start..end))
+                .with_message("missing @message_key annotation")
+                .with_color(Color::Yellow),
+        )
+        .with_note(format!(
+            "@message_key(0x{:X}) will be auto-assigned from CRC-16 of `{}`",
+            auto_key, abs_path
+        ))
+        .with_help(
+            "the hash uses CRC-16 CCITT of the lowercased absolute path; \
+             collisions are resolved by incrementing it by one",
+        )
+        .finish()
+        .eprint((filename.as_str(), Source::from(source)))
+        .unwrap();
+}
+
+fn auto_assign_message_keys(definitions: &mut [Definition]) {
+    let mut used_keys: HashSet<u16> = HashSet::new();
+    collect_existing_message_keys(definitions, &mut used_keys);
+    assign_missing_message_keys(definitions, &mut vec![], &mut used_keys);
+}
+
+fn collect_existing_message_keys(definitions: &[Definition], used: &mut HashSet<u16>) {
+    for def in definitions {
+        match def {
+            Definition::MessageDef(msg) => {
+                if let Some(ann) = msg
+                    .annotations
+                    .iter()
+                    .find(|a| is_message_key_annotation(a))
+                    && let Some(value) = annotation_integer_value(ann)
+                    && (0..=u16::MAX as i128).contains(&value)
+                {
+                    used.insert(value as u16);
+                }
+            }
+            Definition::ModuleDef(module) => {
+                collect_existing_message_keys(&module.node.definitions, used);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn assign_missing_message_keys(
+    definitions: &mut [Definition],
+    module_path: &mut Vec<String>,
+    used_keys: &mut HashSet<u16>,
+) {
+    for def in definitions.iter_mut() {
+        match def {
+            Definition::MessageDef(msg) => {
+                let has_mk = msg.annotations.iter().any(is_message_key_annotation);
+                if !has_mk {
+                    let abs_path = message_absolute_path(module_path, &msg.node.name);
+                    let mut key = crc16_ccitt(abs_path.as_bytes());
+                    while used_keys.contains(&key) {
+                        key = key.wrapping_add(1);
+                    }
+                    used_keys.insert(key);
+
+                    msg.annotations.push(Annotation {
+                        name: vec!["message_key".to_string()],
+                        params: vec![AnnotationParam::Positional(ConstValue::Integer(
+                            IntegerLiteral::new(key as i128, IntegerBase::Hexadecimal),
+                        ))],
+                    });
+                }
+            }
+            Definition::ModuleDef(module) => {
+                module_path.push(module.node.name.clone());
+                assign_missing_message_keys(&mut module.node.definitions, module_path, used_keys);
+                module_path.pop();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Merges `incoming` definitions into `target`, combining `ModuleDef` nodes
