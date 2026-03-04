@@ -14,6 +14,32 @@ use clap::{
     builder::styling::{AnsiColor, Styles},
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
+static OUTPUT_FORMAT: OnceLock<OutputFormat> = OnceLock::new();
+
+fn output_format() -> OutputFormat {
+    OUTPUT_FORMAT.get().copied().unwrap_or(OutputFormat::Pretty)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    Pretty,
+    Github,
+}
+
+fn byte_offset_to_line(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        + 1
+}
+
+fn github_diagnostic(level: &str, file: &str, source: &str, offset: usize, message: &str) {
+    let line = byte_offset_to_line(source, offset);
+    eprintln!("::{level} file={file},line={line}::{message}");
+}
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Blue.on_default().bold())
@@ -42,6 +68,7 @@ fn main() {
 }
 
 fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
+    let _ = OUTPUT_FORMAT.set(options.output_format);
     let is_dir = options.input.is_dir();
 
     if is_dir && (options.emit_rust || options.emit_c || options.emit_cpp || options.emit_python) {
@@ -147,11 +174,42 @@ struct CliOptions {
     /// Directory where generated files will be written. Defaults to the current directory.
     #[arg(long, value_name = "OUTPUT_DIR")]
     output_dir: Option<PathBuf>,
+
+    /// Format for diagnostic messages (errors and warnings).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+    output_format: OutputFormat,
 }
 
 fn report_parse_error(path: &Path, source: &str, error: &ParseError) {
     let filename = path.display().to_string();
     let f = filename.as_str();
+
+    if output_format() == OutputFormat::Github {
+        let (offset, msg) = match error {
+            ParseError::UnrecognizedToken { span, token, .. } => {
+                let detail = error
+                    .format_expected()
+                    .unwrap_or_else(|| "unexpected token".into());
+                (span.0, format!("unexpected token `{token}`: {detail}"))
+            }
+            ParseError::UnrecognizedEof { location, .. } => {
+                let detail = error
+                    .format_expected()
+                    .unwrap_or_else(|| "unexpected end of input".into());
+                (
+                    (*location).min(source.len()),
+                    format!("unexpected end of input: {detail}"),
+                )
+            }
+            ParseError::InvalidToken { location } => (*location, "invalid token".to_string()),
+            ParseError::ExtraToken { span, token } => {
+                (span.0, format!("unexpected extra token `{token}`"))
+            }
+            ParseError::Validation { message } => (0, message.clone()),
+        };
+        github_diagnostic("error", f, source, offset, &msg);
+        return;
+    }
 
     match error {
         ParseError::UnrecognizedToken {
@@ -535,6 +593,26 @@ fn report_conflicting_module_key(
     let (start1, end1) = find_nth_pattern(first_source, "@module_key", first.occurrence);
     let (start2, end2) = find_nth_pattern(second_source, "@module_key", second.occurrence);
 
+    if output_format() == OutputFormat::Github {
+        let mod_path = module_path.join("::");
+        github_diagnostic(
+            "error",
+            &second_name,
+            second_source,
+            start2,
+            &format!(
+                "conflicting @module_key values for module `{}`: \
+                 0x{:X} here vs 0x{:X} in {}:{}",
+                mod_path,
+                second.value,
+                first.value,
+                first_name,
+                byte_offset_to_line(first_source, start1),
+            ),
+        );
+        return;
+    }
+
     Report::build(ReportKind::Error, second_name.clone(), start2)
         .with_message(format!(
             "conflicting @module_key values for module `{}`",
@@ -575,6 +653,26 @@ fn report_duplicate_message_key(
 
     let (start1, end1) = find_nth_pattern(first_source, "@message_key", first.occurrence);
     let (start2, end2) = find_nth_pattern(second_source, "@message_key", second.occurrence);
+
+    if output_format() == OutputFormat::Github {
+        github_diagnostic(
+            "error",
+            &second_name,
+            second_source,
+            start2,
+            &format!(
+                "duplicate @message_key(0x{:X}) in module `{}`: \
+                 used by `{}` here and `{}` in {}:{}",
+                second.value,
+                root_module,
+                second.label,
+                first.label,
+                first_name,
+                byte_offset_to_line(first_source, start1),
+            ),
+        );
+        return;
+    }
 
     Report::build(ReportKind::Error, second_name.clone(), start2)
         .with_message(format!(
@@ -675,6 +773,20 @@ fn report_unresolved_import(segments: &[String], file_path: &Path, source: &str)
         .map(|p| start + p + 1)
         .unwrap_or(start + search.len());
 
+    if output_format() == OutputFormat::Github {
+        github_diagnostic(
+            "error",
+            &filename,
+            source,
+            start,
+            &format!(
+                "unresolved import `{}`: no module `{}` exists",
+                import_text, import_text
+            ),
+        );
+        return;
+    }
+
     Report::build(ReportKind::Error, filename.as_str(), start)
         .with_message(format!("unresolved import `{}`", import_text))
         .with_label(
@@ -760,6 +872,21 @@ fn report_missing_message_key(
     let search = format!("message {}", message_name);
     let start = source.find(&search).unwrap_or(0);
     let end = start + search.len();
+
+    if output_format() == OutputFormat::Github {
+        github_diagnostic(
+            "warning",
+            &filename,
+            source,
+            start,
+            &format!(
+                "message `{}` has no @message_key — auto-assigned @message_key(0x{:X}) \
+                 from CRC-16 CCITT of `{}`",
+                message_name, auto_key, abs_path,
+            ),
+        );
+        return;
+    }
 
     Report::build(ReportKind::Warning, filename.as_str(), start)
         .with_message(format!("message `{}` has no @message_key", message_name))
