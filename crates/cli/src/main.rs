@@ -1,3 +1,5 @@
+mod cli;
+
 use ariadne::{Color, Label, Report, ReportKind, Source, sources};
 use blueberry_codegen_core::{CodegenError, GeneratedFile};
 use blueberry_generator_c as generator_c;
@@ -9,24 +11,8 @@ use blueberry_parser::{
     Annotation, AnnotationParam, ConstValue, Definition, ImportScope, IntegerBase, IntegerLiteral,
     ParseError, parse_idl,
 };
-use clap::{
-    Parser,
-    builder::styling::{AnsiColor, Styles},
-};
+use cli::OutputFormat;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
-
-static OUTPUT_FORMAT: OnceLock<OutputFormat> = OnceLock::new();
-
-fn output_format() -> OutputFormat {
-    OUTPUT_FORMAT.get().copied().unwrap_or(OutputFormat::Pretty)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum OutputFormat {
-    Pretty,
-    Github,
-}
 
 fn byte_offset_to_line(source: &str, offset: usize) -> usize {
     source[..offset.min(source.len())]
@@ -41,14 +27,6 @@ fn github_diagnostic(level: &str, file: &str, source: &str, offset: usize, messa
     eprintln!("::{level} file={file},line={line}::{message}");
 }
 
-const STYLES: Styles = Styles::styled()
-    .header(AnsiColor::Blue.on_default().bold())
-    .usage(AnsiColor::Green.on_default().bold())
-    .literal(AnsiColor::Cyan.on_default().bold())
-    .placeholder(AnsiColor::Cyan.on_default())
-    .error(AnsiColor::Red.on_default().bold())
-    .valid(AnsiColor::Cyan.on_default().bold())
-    .invalid(AnsiColor::Yellow.on_default().bold());
 use std::{
     error::Error,
     fmt, fs,
@@ -57,9 +35,9 @@ use std::{
 };
 
 fn main() {
-    let options = CliOptions::parse();
+    cli::init();
 
-    if let Err(err) = run(&options) {
+    if let Err(err) = run() {
         if err.downcast_ref::<DiagnosticAlreadyPrinted>().is_none() {
             eprintln!("error: {err}");
         }
@@ -67,8 +45,8 @@ fn main() {
     }
 }
 
-fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
-    let _ = OUTPUT_FORMAT.set(options.output_format);
+fn run() -> Result<(), Box<dyn Error>> {
+    let options = cli::get();
     let is_dir = options.input.is_dir();
 
     if is_dir && (options.emit_rust || options.emit_c || options.emit_cpp || options.emit_python) {
@@ -137,54 +115,11 @@ fn run(options: &CliOptions) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Parser)]
-#[command(
-    name = "blueberry-cli",
-    version,
-    about = "Parse Blueberry IDL files and optionally emit normalized IDL or Rust source.",
-    styles = STYLES,
-)]
-struct CliOptions {
-    /// Path to an IDL source file or a directory of IDL files.
-    /// When a directory is given, the folder structure and file names are used
-    /// as module scoping in the combined output (only --emit-idl supported).
-    #[arg(value_name = "IDL_PATH")]
-    input: PathBuf,
-
-    /// Emit normalized IDL to stdout.
-    #[arg(long)]
-    emit_idl: bool,
-
-    /// Emit generated Rust bindings.
-    #[arg(long)]
-    emit_rust: bool,
-
-    /// Emit generated C bindings.
-    #[arg(long)]
-    emit_c: bool,
-
-    /// Emit generated C++ bindings.
-    #[arg(long)]
-    emit_cpp: bool,
-
-    /// Emit generated Python bindings.
-    #[arg(long)]
-    emit_python: bool,
-
-    /// Directory where generated files will be written. Defaults to the current directory.
-    #[arg(long, value_name = "OUTPUT_DIR")]
-    output_dir: Option<PathBuf>,
-
-    /// Format for diagnostic messages (errors and warnings).
-    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-    output_format: OutputFormat,
-}
-
 fn report_parse_error(path: &Path, source: &str, error: &ParseError) {
     let filename = path.display().to_string();
     let f = filename.as_str();
 
-    if output_format() == OutputFormat::Github {
+    if cli::get().output_format == OutputFormat::Github {
         let (offset, msg) = match error {
             ParseError::UnrecognizedToken { span, token, .. } => {
                 let detail = error
@@ -593,7 +528,7 @@ fn report_conflicting_module_key(
     let (start1, end1) = find_nth_pattern(first_source, "@module_key", first.occurrence);
     let (start2, end2) = find_nth_pattern(second_source, "@module_key", second.occurrence);
 
-    if output_format() == OutputFormat::Github {
+    if cli::get().output_format == OutputFormat::Github {
         let mod_path = module_path.join("::");
         github_diagnostic(
             "error",
@@ -654,7 +589,7 @@ fn report_duplicate_message_key(
     let (start1, end1) = find_nth_pattern(first_source, "@message_key", first.occurrence);
     let (start2, end2) = find_nth_pattern(second_source, "@message_key", second.occurrence);
 
-    if output_format() == OutputFormat::Github {
+    if cli::get().output_format == OutputFormat::Github {
         github_diagnostic(
             "error",
             &second_name,
@@ -773,7 +708,7 @@ fn report_unresolved_import(segments: &[String], file_path: &Path, source: &str)
         .map(|p| start + p + 1)
         .unwrap_or(start + search.len());
 
-    if output_format() == OutputFormat::Github {
+    if cli::get().output_format == OutputFormat::Github {
         github_diagnostic(
             "error",
             &filename,
@@ -873,7 +808,7 @@ fn report_missing_message_key(
     let start = source.find(&search).unwrap_or(0);
     let end = start + search.len();
 
-    if output_format() == OutputFormat::Github {
+    if cli::get().output_format == OutputFormat::Github {
         github_diagnostic(
             "warning",
             &filename,
