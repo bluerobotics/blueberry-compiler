@@ -1,0 +1,44 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// *
+// * Some test comment
+// Other comment
+module Example {
+    // Basic types example
+    typedef long MyLong;
+    typedef string MyString;
+    // Enum example
+    enum Status {
+        ACTIVE   = 0,
+        INACTIVE = 1,
+        PENDING  = 2,
+    };
+    // Second enum example
+    enum HwType : uint16 {
+        // This is the default value
+        UNDEFINED   = 0xFFFF,
+        // This is a StarFishDaq
+        SFDQ        = 0x0,
+        BLUE_SERVO  = 0x1,
+        LUMEN       = 0x2,
+        // The ST family of development PCBs
+        NUCLEO      = 0x3,
+        BLUE_ESC    = 0x4,
+        GIGABOARD   = 0x5,
+        BLUE_BRIDGE = 0x6,
+    };
+    // Struct example
+    struct Person {
+        string name;
+        long age;
+        boolean isActive;
+    };
+    // Sequence example
+    typedef sequence<long> LongList;
+    typedef sequence<string, 100> BoundedStringList;
+    typedef sequence<Person> PersonList;
+    // Nested sequences
+    typedef sequence<sequence<long>> Matrix;
+};

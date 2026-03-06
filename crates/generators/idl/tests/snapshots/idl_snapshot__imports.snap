@@ -1,0 +1,8 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Import fixture covering scoped and string imports.
+import Example::Utilities;
+import Root::Systems::Diagnostics;
+import "external/sensors.idl";

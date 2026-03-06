@@ -1,0 +1,12 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Typedef fixture covering primitives, sequences, and scoped names.
+typedef long MyLong;
+typedef string<32> DeviceAlias;
+typedef sequence<long> LongList;
+typedef sequence<string, 64> BoundedStrings;
+typedef Example::Person PersonAlias;
+typedef octet Array32[32];
+typedef octet Matrix3x3[3][3];

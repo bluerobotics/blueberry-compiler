@@ -1,0 +1,12 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Fixture covering implicit enum value propagation.
+enum AutoStatus {
+    FIRST  = 0,
+    SECOND = 1,
+    THIRD  = 10,
+    FOURTH = 11,
+    FIFTH  = 12,
+};

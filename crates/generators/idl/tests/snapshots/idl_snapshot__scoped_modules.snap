@@ -1,0 +1,16 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Test scoped module syntax
+module A {
+    module B {
+        module C {
+            typedef long MyLong;
+            enum Status {
+                ACTIVE   = 0,
+                INACTIVE = 1,
+            };
+        };
+    };
+};

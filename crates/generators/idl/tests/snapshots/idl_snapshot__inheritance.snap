@@ -1,0 +1,18 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+struct BaseStruct {
+    long id;
+};
+struct DerivedStruct : BaseStruct {
+    boolean active;
+};
+@topic(value = "base/topic")
+message BaseMessage {
+    long id;
+};
+@topic(value = "derived/topic")
+message DerivedMessage : BaseMessage {
+    boolean active;
+};

@@ -1,0 +1,15 @@
+---
+source: crates/generators/idl/tests/idl_snapshot.rs
+expression: generated
+---
+// Constants fixture covering literal forms and scoped values.
+enum Status {
+    ACTIVE   = 0,
+    INACTIVE = 1,
+};
+const long MAX_CLIENTS = 42;
+const double PI = 3.141592653589793;
+const boolean FEATURE_FLAG = TRUE;
+const char NEWLINE = '\n';
+const string PRODUCT = "Blueberry";
+const Status DEFAULT_STATUS = Status::ACTIVE;
