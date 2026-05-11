@@ -6,6 +6,7 @@ use blueberry_generator_cpp as cpp_generator;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as python_generator;
 use blueberry_generator_rust::generate_rust;
+use blueberry_generator_typescript as typescript_generator;
 use blueberry_parser::{Definition, parse_idl};
 use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::{JsValue, prelude::*};
@@ -68,11 +69,12 @@ pub fn analyze_idl_wasm(input: &str, mode: &str) -> JsValue {
 type GeneratorFn = fn(&[Definition]) -> Result<Vec<GeneratedFile>, CodegenError>;
 
 fn build_codegen_object(defs: &[Definition]) -> JsValue {
-    const TARGETS: [(&str, GeneratorFn); 4] = [
+    const TARGETS: [(&str, GeneratorFn); 5] = [
         ("python", python_generator::generate),
         ("c", c_generator::generate),
         ("cpp", cpp_generator::generate),
         ("rust", generate_rust),
+        ("typescript", typescript_generator::generate),
     ];
 
     let codegen = Object::new();

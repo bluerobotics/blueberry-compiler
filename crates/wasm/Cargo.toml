@@ -14,6 +14,7 @@ blueberry-generator-c = { path = "../generators/c", version = "0.1.0" }
 blueberry-generator-cpp = { path = "../generators/cpp", version = "0.1.0" }
 blueberry-generator-python = { path = "../generators/python", version = "0.1.0" }
 blueberry-generator-rust = { path = "../generators/rust", version = "0.1.0" }
+blueberry-generator-typescript = { path = "../generators/typescript", version = "0.1.0" }
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }

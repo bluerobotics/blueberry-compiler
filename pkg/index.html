@@ -277,6 +277,7 @@
                         <option value="python">Python</option>
                         <option value="c">C</option>
                         <option value="cpp">C++</option>
+                        <option value="typescript">TypeScript</option>
                     </select>
                 </div>
             </header>
@@ -301,6 +302,7 @@
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/mode/simple.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script type="module">
         import init, { analyze_idl_wasm } from "./blueberry_wasm.js";
@@ -323,8 +325,9 @@
             python: { label: "Python", mode: "python", commentPrefix: "#" },
             c: { label: "C", mode: "text/x-csrc", commentPrefix: "//" },
             cpp: { label: "C++", mode: "text/x-c++src", commentPrefix: "//" },
+            typescript: { label: "TypeScript", mode: "text/javascript", commentPrefix: "//" },
         };
-        const LANGUAGE_TABS = ["rust", "python", "c", "cpp"];
+        const LANGUAGE_TABS = ["rust", "python", "c", "cpp", "typescript"];
         const outputState = {};
         Object.keys(OUTPUT_TABS).forEach((key) => {
             outputState[key] = { files: [], hasError: false, info: "", activePath: null, message: "" };
