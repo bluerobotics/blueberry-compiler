@@ -1,0 +1,12 @@
+[package]
+name = "blueberry-generator-typescript"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blueberry-ast = { path = "../../ast" }
+blueberry-codegen-core = { path = "../codegen-core" }
+
+[dev-dependencies]
+blueberry-parser = { path = "../../parser", version = "0.1.0" }
+tempfile = "3.10"

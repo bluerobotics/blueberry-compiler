@@ -9,6 +9,7 @@ members = [
     "crates/generators/cpp",
     "crates/generators/python",
     "crates/generators/rust",
+    "crates/generators/typescript",
     "crates/wasm",
 ]
 
