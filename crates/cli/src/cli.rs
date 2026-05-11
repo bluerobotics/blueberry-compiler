@@ -71,6 +71,10 @@ pub struct CliOptions {
     #[arg(long)]
     pub emit_python: bool,
 
+    /// Emit generated TypeScript bindings.
+    #[arg(long)]
+    pub emit_typescript: bool,
+
     /// Directory where generated files will be written. Defaults to the current directory.
     #[arg(long, value_name = "OUTPUT_DIR")]
     pub output_dir: Option<PathBuf>,

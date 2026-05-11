@@ -7,6 +7,7 @@ use blueberry_generator_cpp as generator_cpp;
 use blueberry_generator_idl::generate_idl;
 use blueberry_generator_python as generator_python;
 use blueberry_generator_rust::generate_rust;
+use blueberry_generator_typescript as generator_typescript;
 use blueberry_parser::{
     Annotation, AnnotationParam, ConstValue, Definition, ImportScope, IntegerBase, IntegerLiteral,
     ParseError, parse_idl,
@@ -49,8 +50,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let options = cli::get();
     let is_dir = options.input.is_dir();
 
-    if is_dir && (options.emit_rust || options.emit_c || options.emit_cpp || options.emit_python) {
-        return Err("folder input is currently only supported with --emit-idl".into());
+    if is_dir
+        && (options.emit_rust
+            || options.emit_c
+            || options.emit_cpp
+            || options.emit_python
+            || options.emit_typescript)
+    {
+        return Err("directory input only supports `--emit-idl`".into());
     }
 
     let definitions = if is_dir {
@@ -110,6 +117,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         let files = generator_python::generate(&definitions)
             .map_err(|err| fmt_codegen_error("Python", err))?;
         write_generated_files("Python", &output_root, &files)?;
+    }
+
+    if options.emit_typescript {
+        let files = generator_typescript::generate(&definitions)
+            .map_err(|err| fmt_codegen_error("TypeScript", err))?;
+        write_generated_files("TypeScript", &output_root, &files)?;
     }
 
     Ok(())
