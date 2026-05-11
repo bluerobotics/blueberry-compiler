@@ -1,0 +1,19 @@
+{
+  "name": "blueberry-compiler-examples-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript demo for blueberry-generator-typescript: UDP exchange with a Blueberry device using runtime-generated bindings.",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "main": "tsx src/main.ts",
+    "use-full": "tsx src/use_full.ts"
+  },
+  "dependencies": {
+    "blueberry-serde-ts": "github:eldinmiller/blueberry-serde-ts#v0.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
