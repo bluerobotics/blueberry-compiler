@@ -13,12 +13,12 @@ fi
 
 mkdir -p "${TEST_ROOT}/python" "${TEST_ROOT}/rust"
 
-for lang in c cpp python rust; do
+for lang in c cpp python rust typescript; do
   rm -rf "${TEST_ROOT}/${lang}"
 done
 
 cd "${REPO_ROOT}"
 
-for emit in c cpp python rust; do
+for emit in c cpp python rust typescript; do
   cargo run -p blueberry-cli -- "${IDL_PATH}" --emit-"${emit}" --output-dir "${TEST_ROOT}"
 done
