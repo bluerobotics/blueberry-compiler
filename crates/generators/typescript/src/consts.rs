@@ -1,17 +1,11 @@
 //! Emit `export const` declarations and `export type` aliases for IDL `const`/`typedef`.
 
-use blueberry_ast::{
-    BinaryOperator, Commented, ConstDef, ConstValue, TypeDef, UnaryOperator,
-};
+use blueberry_ast::{BinaryOperator, Commented, ConstDef, ConstValue, TypeDef, UnaryOperator};
 
 use crate::TypeScriptGenerator;
 
 impl TypeScriptGenerator {
-    pub(crate) fn emit_const(
-        &self,
-        const_def: &Commented<ConstDef>,
-        _scope: &[String],
-    ) -> String {
+    pub(crate) fn emit_const(&self, const_def: &Commented<ConstDef>, _scope: &[String]) -> String {
         let name = &const_def.node.name;
         let value = render_const_value(&const_def.node.value);
         format!("export const {name} = {value};\n")

@@ -10,7 +10,7 @@
 //! original values. This guarantees that the generated TS speaks the same wire
 //! format as the canonical `blueberry-serde-ts` runtime end-to-end.
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, process::Command};
 
 use blueberry_generator_typescript::generate;
 use blueberry_parser::parse_idl;
@@ -41,7 +41,7 @@ const PACKAGE_JSON: &str = r#"{
   "private": true,
   "type": "module",
   "dependencies": {
-    "blueberry-serde-ts": "github:eldinmiller/blueberry-serde-ts#v0.1.0"
+    "blueberry-serde-ts": "github:eldinmiller/blueberry-serde-ts#v0.1.1"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
@@ -121,12 +121,9 @@ fn generated_typescript_round_trip_matches_inputs() {
         }
         fs::write(&path, &file.contents).expect("write generated file");
     }
-    fs::write(temp_dir.path().join("package.json"), PACKAGE_JSON)
-        .expect("write package.json");
-    fs::write(temp_dir.path().join("tsconfig.json"), TSCONFIG_JSON)
-        .expect("write tsconfig.json");
-    fs::write(temp_dir.path().join("roundtrip.ts"), ROUNDTRIP_TS)
-        .expect("write roundtrip.ts");
+    fs::write(temp_dir.path().join("package.json"), PACKAGE_JSON).expect("write package.json");
+    fs::write(temp_dir.path().join("tsconfig.json"), TSCONFIG_JSON).expect("write tsconfig.json");
+    fs::write(temp_dir.path().join("roundtrip.ts"), ROUNDTRIP_TS).expect("write roundtrip.ts");
 
     let install = npm_command()
         .arg("install")
@@ -147,7 +144,11 @@ fn generated_typescript_round_trip_matches_inputs() {
     } else {
         temp_dir.path().join("node_modules/.bin/tsx")
     };
-    assert!(tsx_path.exists(), "tsx binary missing at {}", tsx_path.display());
+    assert!(
+        tsx_path.exists(),
+        "tsx binary missing at {}",
+        tsx_path.display()
+    );
 
     let run = Command::new(&tsx_path)
         .arg(temp_dir.path().join("roundtrip.ts"))
@@ -168,13 +169,22 @@ fn generated_typescript_round_trip_matches_inputs() {
     );
     assert!(stdout.contains("\"byte\":171"), "byte mismatch: {stdout}");
     assert!(stdout.contains("\"wide\":48879"), "wide mismatch: {stdout}");
-    assert!(stdout.contains("\"swide\":-1234"), "swide mismatch: {stdout}");
-    assert!(stdout.contains("\"quad\":3735928559"), "quad mismatch: {stdout}");
+    assert!(
+        stdout.contains("\"swide\":-1234"),
+        "swide mismatch: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"quad\":3735928559"),
+        "quad mismatch: {stdout}"
+    );
     assert!(stdout.contains("\"squad\":-42"), "squad mismatch: {stdout}");
     assert!(
         stdout.contains("\"wide64\":\"1234605616436508552\""),
         "wide64 mismatch: {stdout}",
     );
-    assert!(stdout.contains("\"swide64\":\"-1\""), "swide64 mismatch: {stdout}");
+    assert!(
+        stdout.contains("\"swide64\":\"-1\""),
+        "swide64 mismatch: {stdout}"
+    );
     assert!(stdout.contains("\"f32\":1.5"), "f32 mismatch: {stdout}");
 }

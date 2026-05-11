@@ -18,7 +18,7 @@ const PACKAGE_JSON: &str = r#"{
   "private": true,
   "type": "module",
   "dependencies": {
-    "blueberry-serde-ts": "github:eldinmiller/blueberry-serde-ts#v0.1.0"
+    "blueberry-serde-ts": "github:eldinmiller/blueberry-serde-ts#v0.1.1"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
@@ -103,10 +103,8 @@ fn generated_typescript_from_blueberry_full_compiles() {
         }
     }
 
-    fs::write(temp_dir.path().join("package.json"), PACKAGE_JSON)
-        .expect("write package.json");
-    fs::write(temp_dir.path().join("tsconfig.json"), TSCONFIG_JSON)
-        .expect("write tsconfig.json");
+    fs::write(temp_dir.path().join("package.json"), PACKAGE_JSON).expect("write package.json");
+    fs::write(temp_dir.path().join("tsconfig.json"), TSCONFIG_JSON).expect("write tsconfig.json");
 
     let install_output = npm_command()
         .arg("install")

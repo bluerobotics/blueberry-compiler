@@ -10,8 +10,8 @@ use blueberry_codegen_core::CodegenError;
 
 use crate::naming::{camel_case, pascal_case, quoted_string};
 use crate::{
-    annotation_string, emit_read_for_member, emit_write_for_member, scoped_name, MessageEntry,
-    TypeScriptGenerator,
+    MessageEntry, TypeScriptGenerator, annotation_string, emit_read_for_member,
+    emit_write_for_member, scoped_name,
 };
 
 impl TypeScriptGenerator {
@@ -68,11 +68,7 @@ impl TypeScriptGenerator {
         body.push_str(&format!("export interface {fields_name} {{\n"));
         for member in &members {
             let ts_ty = self.render_ts_type(&member.ty, &path);
-            body.push_str(&format!(
-                "  {}: {};\n",
-                camel_case(&member.name),
-                ts_ty,
-            ));
+            body.push_str(&format!("  {}: {};\n", camel_case(&member.name), ts_ty,));
         }
         body.push_str("}\n\n");
 
@@ -148,11 +144,7 @@ impl TypeScriptGenerator {
         ));
         for member in &members {
             let expr = emit_read_for_member(self, "r", &member.ty, &path);
-            body.push_str(&format!(
-                "      {}: {},\n",
-                camel_case(&member.name),
-                expr,
-            ));
+            body.push_str(&format!("      {}: {},\n", camel_case(&member.name), expr,));
         }
         body.push_str("    }));\n");
         body.push_str("  }\n");

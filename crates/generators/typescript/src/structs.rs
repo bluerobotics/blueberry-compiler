@@ -2,8 +2,8 @@
 
 use blueberry_ast::{Commented, StructDef};
 
-use crate::naming::camel_case;
 use crate::TypeScriptGenerator;
+use crate::naming::camel_case;
 
 impl TypeScriptGenerator {
     pub(crate) fn emit_struct(

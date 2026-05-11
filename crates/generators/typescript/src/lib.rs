@@ -86,7 +86,7 @@ impl TypeScriptGenerator {
         header.push_str("/* eslint-disable */\n");
         header.push_str("/* prettier-ignore */\n\n");
         header.push_str(&format_imports(RUNTIME_PACKAGE, &imports));
-        header.push_str("\n");
+        header.push('\n');
 
         let mut messages_contents = header;
         messages_contents.push_str(&body);
@@ -119,8 +119,8 @@ impl TypeScriptGenerator {
         for def in defs {
             match def {
                 Definition::ModuleDef(module) => {
-                    let mk = annotation_u16(&module.annotations, "module_key")
-                        .or(parent_module_key);
+                    let mk =
+                        annotation_u16(&module.annotations, "module_key").or(parent_module_key);
                     scope.push(module.node.name.clone());
                     self.emit_definitions(
                         &module.node.definitions,
@@ -161,9 +161,8 @@ impl TypeScriptGenerator {
                     let module_key = annotation_u16(&message_def.annotations, "module_key")
                         .or(parent_module_key)
                         .unwrap_or(DEFAULT_MODULE_KEY);
-                    let message_key =
-                        annotation_u16(&message_def.annotations, "message_key")
-                            .unwrap_or_else(|| key_gen.next());
+                    let message_key = annotation_u16(&message_def.annotations, "message_key")
+                        .unwrap_or_else(|| key_gen.next());
                     let entry = self.emit_message(
                         message_def,
                         scope,
@@ -217,7 +216,7 @@ impl TypeScriptGenerator {
 
         out.push_str("export type DecodedMessage =\n");
         for entry in messages {
-            let kind = pascal_case(&entry.class_name.trim_end_matches("Message"));
+            let kind = pascal_case(entry.class_name.trim_end_matches("Message"));
             out.push_str(&format!(
                 "  | {{ kind: {kind}; header: MessageHeader; fields: {fields} }}\n",
                 kind = quoted_string(&kind),
@@ -240,11 +239,8 @@ impl TypeScriptGenerator {
             if !seen.insert(combined) {
                 continue;
             }
-            let kind = pascal_case(&entry.class_name.trim_end_matches("Message"));
-            out.push_str(&format!(
-                "    case 0x{:08x}: {{\n",
-                combined,
-            ));
+            let kind = pascal_case(entry.class_name.trim_end_matches("Message"));
+            out.push_str(&format!("    case 0x{:08x}: {{\n", combined,));
             out.push_str(&format!(
                 "      const decoded = {class}.decode(bytes);\n",
                 class = entry.class_name,
@@ -295,9 +291,8 @@ impl TypeScriptGenerator {
             } => {
                 let mut elem_ty = self.render_ts_type(element_type, scope);
                 for _ in dimensions {
-                    let needs_parens = elem_ty.contains(' ')
-                        || elem_ty.contains('|')
-                        || elem_ty.contains('&');
+                    let needs_parens =
+                        elem_ty.contains(' ') || elem_ty.contains('|') || elem_ty.contains('&');
                     elem_ty = if needs_parens {
                         format!("({elem_ty})[]")
                     } else {
@@ -402,19 +397,19 @@ fn format_imports(package: &str, imports: &BTreeSet<&'static str>) -> String {
 /// a block when sequences/structs need a loop). Handles every type the runtime
 /// understands; unresolvable scoped names fall back to a TODO-marker.
 pub(crate) fn emit_write_for_member(
-    gen: &TypeScriptGenerator,
+    tsgen: &TypeScriptGenerator,
     w_var: &str,
     accessor: &str,
     ty: &Type,
     scope: &[String],
     indent: &str,
 ) -> String {
-    let resolved = gen.registry.resolve_type(ty, scope);
-    emit_write_call(gen, w_var, accessor, &resolved, scope, indent)
+    let resolved = tsgen.registry.resolve_type(ty, scope);
+    emit_write_call(tsgen, w_var, accessor, &resolved, scope, indent)
 }
 
 pub(crate) fn emit_write_call(
-    gen: &TypeScriptGenerator,
+    tsgen: &TypeScriptGenerator,
     w_var: &str,
     accessor: &str,
     resolved: &Type,
@@ -445,46 +440,50 @@ pub(crate) fn emit_write_call(
                 seq = seq_var,
                 w = w_var,
             );
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{indent}  for (const {elem} of {acc} ?? []) {{\n",
+                "{indent}  for (const {elem} of {acc} ?? []) {{",
                 elem = elem_idx,
                 acc = accessor,
             );
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{indent}    {seq}.writeElement((sw) => {{\n",
+                "{indent}    {seq}.writeElement((sw) => {{",
                 seq = seq_var,
             );
-            let resolved_elem = gen.registry.resolve_type(element_type, scope);
+            let resolved_elem = tsgen.registry.resolve_type(element_type, scope);
             let inner_indent = format!("{indent}      ");
             out.push_str(&emit_write_call(
-                gen,
+                tsgen,
                 "sw",
                 &elem_idx,
                 &resolved_elem,
                 scope,
                 &inner_indent,
             ));
-            let _ = write!(out, "{indent}    }});\n");
-            let _ = write!(out, "{indent}  }}\n{indent}  {seq}.end();\n{indent}}}\n", seq = seq_var);
+            let _ = writeln!(out, "{indent}    }});");
+            let _ = write!(
+                out,
+                "{indent}  }}\n{indent}  {seq}.end();\n{indent}}}\n",
+                seq = seq_var
+            );
             out
         }
         Type::ScopedName(path) => {
-            if let Some(base) = gen.registry.enum_base(path) {
+            if let Some(base) = tsgen.registry.enum_base(path) {
                 let casted = format!("({} as number)", accessor);
-                emit_write_call(gen, w_var, &casted, base, scope, indent)
-            } else if let Some(struct_path) = gen.registry.resolve_struct(path, scope) {
-                let members = gen.registry.collect_struct_members(&struct_path);
+                emit_write_call(tsgen, w_var, &casted, base, scope, indent)
+            } else if let Some(struct_path) = tsgen.registry.resolve_struct(path, scope) {
+                let members = tsgen.registry.collect_struct_members(&struct_path);
                 let mut sorted = members.clone();
-                gen.registry.sort_members_by_alignment(&mut sorted);
+                tsgen.registry.sort_members_by_alignment(&mut sorted);
                 let mut out = String::new();
-                let _ = write!(out, "{indent}{{\n");
+                let _ = writeln!(out, "{indent}{{");
                 let inner = format!("{indent}  ");
                 for member in &sorted {
                     let sub_accessor = format!("{}.{}", accessor, camel_case(&member.name));
                     out.push_str(&emit_write_call(
-                        gen,
+                        tsgen,
                         w_var,
                         &sub_accessor,
                         &member.ty,
@@ -492,10 +491,13 @@ pub(crate) fn emit_write_call(
                         &inner,
                     ));
                 }
-                let _ = write!(out, "{indent}}}\n");
+                let _ = writeln!(out, "{indent}}}");
                 out
             } else {
-                format!("{indent}// TODO: write unresolved scoped name {}\n", path.join("::"))
+                format!(
+                    "{indent}// TODO: write unresolved scoped name {}\n",
+                    path.join("::")
+                )
             }
         }
         Type::WChar => format!("{indent}{w_var}.writeU8({accessor});\n"),
@@ -503,17 +505,17 @@ pub(crate) fn emit_write_call(
 }
 
 pub(crate) fn emit_read_for_member(
-    gen: &TypeScriptGenerator,
+    tsgen: &TypeScriptGenerator,
     r_var: &str,
     ty: &Type,
     scope: &[String],
 ) -> String {
-    let resolved = gen.registry.resolve_type(ty, scope);
-    emit_read_expr(gen, r_var, &resolved, scope)
+    let resolved = tsgen.registry.resolve_type(ty, scope);
+    emit_read_expr(tsgen, r_var, &resolved, scope)
 }
 
 pub(crate) fn emit_read_expr(
-    gen: &TypeScriptGenerator,
+    tsgen: &TypeScriptGenerator,
     r_var: &str,
     resolved: &Type,
     scope: &[String],
@@ -531,9 +533,9 @@ pub(crate) fn emit_read_expr(
         Type::Double | Type::LongDouble => format!("{r_var}.readF64()"),
         Type::String { .. } | Type::WString => format!("{r_var}.readString()"),
         Type::Sequence { element_type, .. } | Type::Array { element_type, .. } => {
-            let resolved_elem = gen.registry.resolve_type(element_type, scope);
-            let ts_elem_ty = gen.render_ts_type(&resolved_elem, scope);
-            let read_call = emit_read_expr(gen, "sr", &resolved_elem, scope);
+            let resolved_elem = tsgen.registry.resolve_type(element_type, scope);
+            let ts_elem_ty = tsgen.render_ts_type(&resolved_elem, scope);
+            let read_call = emit_read_expr(tsgen, "sr", &resolved_elem, scope);
             format!(
                 "(() => {{ const seq = {r}.beginSequence(); const out: {ty}[] = []; for (let i = 0; i < seq.count; i++) {{ out.push(seq.readElement((sr) => ({read}))); }} return out; }})()",
                 r = r_var,
@@ -542,26 +544,30 @@ pub(crate) fn emit_read_expr(
             )
         }
         Type::ScopedName(path) => {
-            if let Some(base) = gen.registry.enum_base(path) {
-                let inner = emit_read_expr(gen, r_var, base, scope);
+            if let Some(base) = tsgen.registry.enum_base(path) {
+                let inner = emit_read_expr(tsgen, r_var, base, scope);
                 let enum_name = path
                     .last()
                     .cloned()
                     .map(|n| pascal_case(&n))
                     .unwrap_or_else(|| "unknown".to_string());
                 format!("({inner}) as {enum_name}")
-            } else if let Some(struct_path) = gen.registry.resolve_struct(path, scope) {
-                let members = gen.registry.collect_struct_members(&struct_path);
+            } else if let Some(struct_path) = tsgen.registry.resolve_struct(path, scope) {
+                let members = tsgen.registry.collect_struct_members(&struct_path);
                 let mut sorted = members.clone();
-                gen.registry.sort_members_by_alignment(&mut sorted);
+                tsgen.registry.sort_members_by_alignment(&mut sorted);
                 let mut field_inits = Vec::new();
                 for member in &sorted {
-                    let value = emit_read_for_member(gen, r_var, &member.ty, &struct_path);
+                    let value = emit_read_for_member(tsgen, r_var, &member.ty, &struct_path);
                     field_inits.push(format!("{}: {}", camel_case(&member.name), value));
                 }
                 format!("{{ {} }}", field_inits.join(", "))
             } else {
-                format!("/* TODO: unresolved {} */ ({} as any)", path.join("::"), r_var)
+                format!(
+                    "/* TODO: unresolved {} */ ({} as any)",
+                    path.join("::"),
+                    r_var
+                )
             }
         }
         Type::WChar => format!("{r_var}.readU8()"),

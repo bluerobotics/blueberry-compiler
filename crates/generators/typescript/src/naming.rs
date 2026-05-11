@@ -151,7 +151,7 @@ fn escape_reserved(name: &str) -> String {
         "from",
         "of",
     ];
-    if RESERVED.iter().any(|r| *r == name) {
+    if RESERVED.contains(&name) {
         format!("{name}_")
     } else {
         name.to_string()
